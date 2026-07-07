@@ -26,11 +26,11 @@ window.FINANCE_CONFIG = {
   appUrl: "https://andrevonrhenen-arminius.github.io/fortnight-finance/",
 
   // Leave true only while testing. Change to false after cloud login works.
-  allowLocalMode: true,
+  allowLocalMode: false,
 
   // These controls affect what the login screen displays.
-  enableEmailPasswordLogin: true,
-  enableSignUp: true,
+  enableEmailPasswordLogin: false,
+  enableSignUp: false,
   enableMicrosoftLogin: true,
 
   // Automatically signs out a cloud session after inactivity. Set 0 to disable.
