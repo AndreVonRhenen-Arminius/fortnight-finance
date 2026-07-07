@@ -1,105 +1,15 @@
-<!doctype html>
-<html lang="en-NZ">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#17324d">
-  <meta name="description" content="Private fortnightly household finance planner">
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="assets/icons/icon-192.png">
-  <link rel="apple-touch-icon" href="assets/icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css">
-  <title>Fortnight Finance</title>
-</head>
-<body>
-  <div id="app" class="app-shell">
-    <aside class="sidebar" id="sidebar">
-      <div class="brand">
-        <div class="brand-mark">FF</div>
-        <div>
-          <strong>Fortnight Finance</strong>
-          <span>Household budget</span>
-        </div>
-      </div>
-
-      <nav id="mainNav" aria-label="Main navigation">
-        <button class="nav-item active" data-view="dashboard"><span>▦</span>Dashboard</button>
-        <button class="nav-item" data-view="bills"><span>▤</span>Bills</button>
-        <button class="nav-item" data-view="income"><span>＋</span>Income</button>
-        <button class="nav-item" data-view="transactions"><span>⇄</span>Transactions</button>
-        <button class="nav-item" data-view="planning"><span>◎</span>Planning</button>
-        <button class="nav-item" data-view="backup"><span>⤓</span>Backup & Sync</button>
-        <button class="nav-item" data-view="settings"><span>⚙</span>Settings</button>
-      </nav>
-
-      <div class="sidebar-footer">
-        <div id="syncBadge" class="sync-badge local">Local mode</div>
-        <button id="installButton" class="secondary-button hidden">Install app</button>
-        <button id="signOutButton" class="text-button hidden">Sign out</button>
-      </div>
-    </aside>
-
-    <main class="main-panel">
-      <header class="topbar">
-        <button id="menuButton" class="icon-button mobile-only" aria-label="Open menu">☰</button>
-        <div>
-          <h1 id="pageTitle">Dashboard</h1>
-          <p id="pageSubtitle">Your current fortnight at a glance</p>
-        </div>
-        <div class="topbar-actions">
-          <span id="saveStatus" class="save-status">Saved locally</span>
-          <button id="themeToggle" class="icon-button theme-toggle" type="button" aria-label="Switch colour theme" title="Switch colour theme">☀</button>
-          <button id="quickAddButton" class="primary-button">+ Add transaction</button>
-        </div>
-      </header>
-
-      <section id="content" class="content" aria-live="polite"></section>
-    </main>
-  </div>
-
-  <div id="authScreen" class="auth-screen hidden">
-    <div class="auth-card">
-      <div class="brand auth-brand">
-        <div class="brand-mark">FF</div>
-        <div>
-          <strong>Fortnight Finance</strong>
-          <span>Secure sign-in</span>
-        </div>
-      </div>
-      <h2>Sign in to your finance app</h2>
-      <p class="muted">Use your configured Supabase account for secure login and device synchronisation.</p>
-      <form id="authForm">
-        <label>Email<input id="authEmail" type="email" autocomplete="email" required></label>
-        <label>Password<input id="authPassword" type="password" autocomplete="current-password" minlength="8" required></label>
-        <div class="button-row">
-          <button class="primary-button" type="submit">Sign in</button>
-          <button id="signUpButton" class="secondary-button" type="button">Create account</button>
-        </div>
-      </form>
-      <button id="microsoftLoginButton" class="microsoft-button" type="button">Sign in with Microsoft</button>
-      <button id="localModeButton" class="text-button" type="button">Use local-only mode</button>
-      <p id="authMessage" class="form-message"></p>
-    </div>
-  </div>
-
-  <div id="modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
-    <div class="modal-card">
-      <div class="modal-header">
-        <h2 id="modalTitle">Form</h2>
-        <button id="modalClose" class="icon-button" aria-label="Close">×</button>
-      </div>
-      <div id="modalBody" class="modal-body"></div>
-    </div>
-  </div>
-
-  <div id="toastContainer" class="toast-container" aria-live="assertive"></div>
-
-  <input id="backupImportInput" type="file" accept=".json,.afbackup,application/json" hidden>
-  <input id="statementImportInput" type="file" accept=".csv,text/csv" hidden>
-  <input id="setupImportInput" type="file" accept=".csv,text/csv" hidden>
-
-  <script src="vendor/supabase.min.js"></script>
-  <script src="js/config.js"></script>
-  <script type="module" src="js/app.js"></script>
-</body>
-</html>
+{
+  "name": "Fortnight Finance",
+  "short_name": "Finance",
+  "description": "Private fortnightly household finance planner",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#081118",
+  "theme_color": "#10283b",
+  "orientation": "any",
+  "icons": [
+    { "src": "assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
