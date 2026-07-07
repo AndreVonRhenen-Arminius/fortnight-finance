@@ -1,0 +1,14 @@
+record_type,name,category,amount,frequency,next_date,account,type,automatic,variable,target,balance,contribution,interest_rate,minimum_payment,extra_payment,pattern,merchant,active,notes
+account,Main Account,,,,,,everyday,,,,,,,,,,,yes,Income and everyday household account
+account,Bills Account,,,,,,bills,,,,,,,,,,,yes,Direct debits and scheduled bills
+account,Savings,,,,,,savings,,,,,,,,,,,yes,Household savings
+income,Andre Salary,,0,fortnightly,2026-07-17,Main Account,,,no,,,,,,,,,yes,Replace the amount and date
+bill,Spark,Internet and mobile,0,monthly,2026-07-18,Bills Account,,yes,yes,,,,,,,,,yes,Variable monthly bill
+bill,Personal Loan,Debt payment,319.55,fortnightly,2026-07-17,Bills Account,,yes,no,,,,,,,,,yes,Replace with current payment details
+budget,,Groceries,400,,,,,,,,,,,,,,,yes,Fortnightly spending limit
+budget,,Fuel / transport,180,,,,,,,,,,,,,,,yes,Fortnightly spending limit
+sinking_fund,Emergency fund,,,,,,,,,3000,0,100,,,,,,yes,Target current balance and fortnightly contribution
+sinking_fund,Car maintenance / tyres / WOF,,,,,,,,,1000,0,50,,,,,,yes,
+debt,Personal loan,,,,,,,,,,24901.40,,13.9,319.55,130.45,,,yes,Replace with current balance
+rule,,Groceries,,,,,expense,,,,,,,,,NEW WORLD,New World,yes,Matches statement descriptions containing NEW WORLD
+rule,,Fuel / transport,,,,,expense,,,,,,,,,Z ENERGY,Z Energy,yes,Matches statement descriptions containing Z ENERGY
