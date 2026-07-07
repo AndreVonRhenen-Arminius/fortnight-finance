@@ -16,14 +16,14 @@ window.FINANCE_CONFIG = {
   appName: "Fortnight Finance",
 
   // Example: https://YOUR-PROJECT-REF.supabase.co
-  supabaseUrl: "",
+  supabaseUrl: "https://vhcacnqbhuhkmthnbpqh.supabase.co",
 
   // Use an sb_publishable_... key. A legacy anon key also works.
-  supabasePublishableKey: "",
+  supabasePublishableKey: "sb_publishable_TXDnqtGPN3O1k5-Cb16hqw_cniZCbo1",
 
   // Exact deployed address, including the repository name and trailing slash.
   // Example: https://YOUR-GITHUB-USERNAME.github.io/fortnight-finance/
-  appUrl: "",
+  appUrl: "https://andrevonrhenen-arminius.github.io/fortnight-finance/",
 
   // Leave true only while testing. Change to false after cloud login works.
   allowLocalMode: true,
