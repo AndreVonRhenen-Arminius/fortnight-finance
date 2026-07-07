@@ -1,3 +1,4 @@
+// Fortnight Finance v1.3.3 application module. This file belongs in /js/app.js only.
 import { storage } from './storage.js';
 import {
   cloudConfigured, getSession, signIn, signUp, signInMicrosoft, signOut,
@@ -53,7 +54,8 @@ function defaultState() {
       selectedPeriodStart: today,
       openingBalance: 0,
       householdName: 'Household',
-      showDojoAccount: false
+      showDojoAccount: false,
+      theme: 'dark'
     },
     accounts: [
       { id: uid('acct'), name: 'Main account', type: 'everyday', active: true },
@@ -97,6 +99,7 @@ function migrate(input) {
 
 async function init() {
   state = migrate(await storage.getState());
+  applyTheme(state.settings.theme);
   await restoreFolderHandle().catch(() => null);
   registerServiceWorker();
   bindGlobalEvents();
@@ -128,6 +131,7 @@ async function enterCloudMode() {
     const remote = await loadRemote();
     if (remote?.state) {
       state = migrate(remote.state);
+      applyTheme(state.settings.theme);
       await storage.setState(state);
     } else {
       await saveRemote(state);
@@ -163,6 +167,7 @@ function bindGlobalEvents() {
 
   $('#menuButton').addEventListener('click', () => $('#sidebar').classList.toggle('open'));
   $('#quickAddButton').addEventListener('click', () => openTransactionForm());
+  $('#themeToggle').addEventListener('click', toggleTheme);
   $('#modalClose').addEventListener('click', closeModal);
   $('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
@@ -202,6 +207,7 @@ function bindGlobalEvents() {
 
   $('#backupImportInput').addEventListener('change', handleBackupImport);
   $('#statementImportInput').addEventListener('change', handleStatementFile);
+  $('#setupImportInput').addEventListener('change', handleSetupFile);
 
   window.addEventListener('beforeinstallprompt', event => {
     event.preventDefault(); installPrompt = event;
@@ -217,6 +223,25 @@ function bindGlobalEvents() {
   for (const eventName of ['pointerdown', 'keydown', 'touchstart']) {
     window.addEventListener(eventName, resetInactivityTimer, { passive: true });
   }
+}
+
+function applyTheme(theme = 'dark') {
+  const selected = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = selected;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', selected === 'dark' ? '#0d161d' : '#17324d');
+  const button = $('#themeToggle');
+  if (button) {
+    button.textContent = selected === 'dark' ? '☀' : '☾';
+    button.setAttribute('aria-label', selected === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+    button.title = selected === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+  }
+}
+
+async function toggleTheme() {
+  state.settings.theme = state.settings.theme === 'light' ? 'dark' : 'light';
+  applyTheme(state.settings.theme);
+  await commit(`Changed theme to ${state.settings.theme}`, false);
 }
 
 function resetInactivityTimer() {
@@ -238,11 +263,18 @@ function startInactivityTimer() {
   }, minutes * 60 * 1000);
 }
 
-function registerServiceWorker() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => null);
+async function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' });
+    registration.update().catch(() => null);
+  } catch {
+    // The app remains usable online even if service-worker registration fails.
+  }
 }
 
 function render() {
+  applyTheme(state.settings.theme);
   const [title, subtitle] = titles[currentView];
   $('#pageTitle').textContent = title;
   $('#pageSubtitle').textContent = subtitle;
@@ -275,6 +307,8 @@ function bindViewEvents() {
       'edit-transaction': () => openTransactionForm(id),
       'delete-transaction': () => deleteEntity('transactions', id, 'transaction'),
       'import-statement': () => $('#statementImportInput').click(),
+      'download-setup-template': () => downloadSetupTemplate(),
+      'import-setup': () => $('#setupImportInput').click(),
       'add-budget': () => openBudgetForm(),
       'edit-budget': () => openBudgetForm(id),
       'delete-budget': () => deleteEntity('budgets', id, 'budget category'),
@@ -308,6 +342,27 @@ function bindViewEvents() {
 
   const settingsForm = $('#settingsForm');
   if (settingsForm) settingsForm.addEventListener('submit', saveSettings);
+}
+
+
+async function downloadSetupTemplate() {
+  try {
+    const response = await fetch('./samples/finance-setup-template.csv', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Could not load the setup template (${response.status}).`);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'finance-setup-template.csv';
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('Setup template downloaded.', 'success');
+  } catch (error) {
+    toast(error.message || 'Could not download the setup template.', 'error');
+  }
 }
 
 function getPeriod() {
@@ -527,11 +582,17 @@ function renderBackup() {
 }
 
 function renderSettings() {
-  return `<form id="settingsForm" class="card">
+  return `<div class="card">
+    <h2>Quick setup import</h2>
+    <p class="muted">The fastest setup method is to complete one CSV template for accounts, income, recurring bills, spending limits, sinking funds, debts and statement-matching rules. Actual bank spending is imported separately under Transactions.</p>
+    <div class="button-row"><button class="secondary-button" type="button" data-action="download-setup-template">Download setup template</button><button class="primary-button" type="button" data-action="import-setup">Import completed template</button></div>
+  </div>
+  <form id="settingsForm" class="card" style="margin-top:18px">
     <h2>Fortnight settings</h2><div class="form-grid">
       <label>Household name<input name="householdName" value="${escapeHtml(state.settings.householdName)}"></label>
       <label>Known fortnight start date<input name="fortnightAnchor" type="date" value="${state.settings.fortnightAnchor}" required><span class="help">Enter the first day of a known payday fortnight.</span></label>
       <label>Opening available balance<input name="openingBalance" type="number" min="0" step="0.01" value="${number(state.settings.openingBalance)}"><span class="help">Optional buffer or money already available at the start of each selected fortnight.</span></label>
+      <label>Colour theme<select name="theme"><option value="dark" ${state.settings.theme !== 'light' ? 'selected' : ''}>Dark</option><option value="light" ${state.settings.theme === 'light' ? 'selected' : ''}>Light</option></select><span class="help">You can also use the sun/moon button in the top bar.</span></label>
     </div><div class="button-row end"><button class="primary-button">Save settings</button></div>
   </form>
   <div class="section-header"><h2>Account nicknames</h2><button class="primary-button" data-action="add-account">+ Add account</button></div>
@@ -667,7 +728,7 @@ async function setBillOverride(id,date) {
 
 async function saveSettings(event) {
   event.preventDefault(); const f=new FormData(event.target); const oldAnchor=state.settings.fortnightAnchor;
-  state.settings.householdName=f.get('householdName').trim()||'Household';state.settings.fortnightAnchor=f.get('fortnightAnchor');state.settings.openingBalance=number(f.get('openingBalance'));
+  state.settings.householdName=f.get('householdName').trim()||'Household';state.settings.fortnightAnchor=f.get('fortnightAnchor');state.settings.openingBalance=number(f.get('openingBalance'));state.settings.theme=f.get('theme')==='light'?'light':'dark';applyTheme(state.settings.theme);
   if(oldAnchor!==state.settings.fortnightAnchor) state.settings.selectedPeriodStart=fortnightContaining(state.settings.fortnightAnchor).start;
   await commit('Updated settings',true);toast('Settings saved.','success');render();
 }
@@ -700,7 +761,7 @@ function showSyncConflict(remote) {
   openModal('Cloud sync conflict',`<div class="notice danger">Another device changed the cloud copy before this device finished syncing.</div><p><strong>Cloud updated:</strong> ${escapeHtml(remote?.updatedAt||'Unknown')}</p><p>Choose carefully. Reloading cloud discards this device's unsynchronised version. Replacing cloud overwrites the other device's version.</p><div class="button-row end"><button class="secondary-button" id="conflictReload">Reload cloud</button><button class="danger-button" id="conflictOverwrite">Replace cloud</button></div>`);
   $('#conflictReload').onclick=async()=>{await restoreFromCloud();closeModal();};$('#conflictOverwrite').onclick=async()=>{await overwriteCloud();closeModal();};
 }
-async function restoreFromCloud() { if(!confirm('Replace this device data with the current cloud copy?'))return;const remote=await loadRemote();if(!remote?.state)return toast('No cloud copy was found.','error');state=migrate(remote.state);await storage.setState(state);render();toast('Cloud copy restored.','success'); }
+async function restoreFromCloud() { if(!confirm('Replace this device data with the current cloud copy?'))return;const remote=await loadRemote();if(!remote?.state)return toast('No cloud copy was found.','error');state=migrate(remote.state);applyTheme(state.settings.theme);await storage.setState(state);render();toast('Cloud copy restored.','success'); }
 async function overwriteCloud() { if(!confirm('Replace the cloud copy with this device data?'))return;await overwriteRemote(state);updateSyncBadge('synced','Cloud synced');toast('Cloud copy replaced.','success'); }
 function updateSyncBadge(kind,text){const badge=$('#syncBadge');badge.className=`sync-badge ${kind}`;badge.textContent=text;}
 
@@ -716,16 +777,150 @@ async function promptEncryptedExport(){const password=prompt('Create a backup pa
 
 async function handleBackupImport(event) {
   const file=event.target.files[0];event.target.value='';if(!file)return;
-  try{const text=await file.text();let password='';let parsed=JSON.parse(text);if(parsed.format==='fortnight-finance-encrypted')password=prompt('Enter the backup password:')||'';const backup=await readBackupPackage(text,password);openModal('Restore backup',`<div class="notice warning">Restoring replaces the current working data on this device. A local safety snapshot will be created first.</div><p><strong>Backup created:</strong> ${escapeHtml(backup.createdAt||'Unknown')}</p><p><strong>Bills:</strong> ${backup.data.bills?.length||0}<br><strong>Transactions:</strong> ${backup.data.transactions?.length||0}<br><strong>Income schedules:</strong> ${backup.data.incomes?.length||0}</p><div class="button-row end"><button class="danger-button" id="confirmRestore">Restore backup</button></div>`);$('#confirmRestore').onclick=async()=>{await storage.addSnapshot(structuredClone(state),'Before backup restore');state=migrate(backup.data);await storage.setState(state);closeModal();render();scheduleSync();toast('Backup restored.','success');};}catch(error){toast(error.message,'error');}
+  try{const text=await file.text();let password='';let parsed=JSON.parse(text);if(parsed.format==='fortnight-finance-encrypted')password=prompt('Enter the backup password:')||'';const backup=await readBackupPackage(text,password);openModal('Restore backup',`<div class="notice warning">Restoring replaces the current working data on this device. A local safety snapshot will be created first.</div><p><strong>Backup created:</strong> ${escapeHtml(backup.createdAt||'Unknown')}</p><p><strong>Bills:</strong> ${backup.data.bills?.length||0}<br><strong>Transactions:</strong> ${backup.data.transactions?.length||0}<br><strong>Income schedules:</strong> ${backup.data.incomes?.length||0}</p><div class="button-row end"><button class="danger-button" id="confirmRestore">Restore backup</button></div>`);$('#confirmRestore').onclick=async()=>{await storage.addSnapshot(structuredClone(state),'Before backup restore');state=migrate(backup.data);applyTheme(state.settings.theme);await storage.setState(state);closeModal();render();scheduleSync();toast('Backup restored.','success');};}catch(error){toast(error.message,'error');}
 }
 
 async function loadSnapshotsIntoView() {
   if(currentView!=='backup'||!$('#snapshotArea'))return;const snapshots=await storage.listSnapshots();
   $('#snapshotArea').innerHTML=snapshots.length?`<div class="table-wrap"><table><thead><tr><th>Created</th><th>Reason</th><th></th></tr></thead><tbody>${snapshots.slice(0,15).map(s=>`<tr><td>${new Date(s.createdAt).toLocaleString('en-NZ')}</td><td>${escapeHtml(s.reason)}</td><td><button class="secondary-button" data-action="restore-snapshot" data-id="${s.id}">Restore</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty-state">No snapshots yet.</div>';
 }
-async function restoreSnapshot(id){if(!confirm('Restore this local snapshot?'))return;const snap=await storage.getSnapshot(id);if(!snap)return;await storage.addSnapshot(structuredClone(state),'Before snapshot restore');state=migrate(snap.state);await storage.setState(state);render();scheduleSync();toast('Snapshot restored.','success');}
+async function restoreSnapshot(id){if(!confirm('Restore this local snapshot?'))return;const snap=await storage.getSnapshot(id);if(!snap)return;await storage.addSnapshot(structuredClone(state),'Before snapshot restore');state=migrate(snap.state);applyTheme(state.settings.theme);await storage.setState(state);render();scheduleSync();toast('Snapshot restored.','success');}
 
 async function clearAllData(){if(!confirm('Clear the local app data on this device? This cannot be undone without a backup or cloud copy.'))return;state=defaultState();await storage.clearAll();await storage.setState(state);render();toast('Local app data cleared.');}
+
+function normaliseSetupHeader(value) {
+  return String(value || '').replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+function setupBoolean(value, fallback = true) {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return fallback;
+  return ['yes', 'y', 'true', '1', 'active', 'on'].includes(text);
+}
+function setupType(value) {
+  const text = normaliseSetupHeader(value);
+  const aliases = {
+    accounts: 'account', account: 'account',
+    incomes: 'income', income: 'income',
+    bills: 'bill', bill: 'bill', recurring_expense: 'bill',
+    budget: 'budget', spending_limit: 'budget', spending_limits: 'budget',
+    sinking_fund: 'sinking_fund', sinkingfund: 'sinking_fund', fund: 'sinking_fund',
+    debt: 'debt', debts: 'debt', loan: 'debt',
+    rule: 'rule', matching_rule: 'rule'
+  };
+  return aliases[text] || '';
+}
+function setupFrequency(value) {
+  const text = normaliseSetupHeader(value);
+  const aliases = { week: 'weekly', weekly: 'weekly', fortnight: 'fortnightly', fortnightly: 'fortnightly', biweekly: 'fortnightly', month: 'monthly', monthly: 'monthly', quarter: 'quarterly', quarterly: 'quarterly', annual: 'yearly', annually: 'yearly', year: 'yearly', yearly: 'yearly', one_time: 'once', oneoff: 'once', once: 'once' };
+  return aliases[text] || '';
+}
+function setupAccountType(value) {
+  const text = normaliseSetupHeader(value);
+  return ['everyday', 'bills', 'savings', 'credit', 'cash', 'other'].includes(text) ? text : 'other';
+}
+function findAccountByName(name) {
+  const target = String(name || '').trim().toLowerCase();
+  return state.accounts.find(a => a.name.trim().toLowerCase() === target);
+}
+function upsertImported(collection, keyFn, incoming) {
+  const key = keyFn(incoming);
+  const index = state[collection].findIndex(item => keyFn(item) === key);
+  if (index >= 0) {
+    const existing = state[collection][index];
+    state[collection][index] = { ...existing, ...incoming, id: existing.id };
+    return 'updated';
+  }
+  state[collection].push(incoming);
+  return 'added';
+}
+function buildSetupImportPlan(rows) {
+  const headers = rows[0].map(normaliseSetupHeader);
+  const required = ['record_type'];
+  if (required.some(name => !headers.includes(name))) throw new Error('The setup CSV must contain a record_type column. Download the current template and copy your information into it.');
+  const records = [];
+  const errors = [];
+  rows.slice(1).forEach((row, index) => {
+    const data = {};
+    headers.forEach((header, col) => { data[header] = String(row[col] ?? '').trim(); });
+    const rowNumber = index + 2;
+    const recordType = setupType(data.record_type);
+    if (!recordType) { errors.push(`Row ${rowNumber}: unknown record_type “${data.record_type || 'blank'}”.`); return; }
+    const name = data.name || '';
+    if (['account', 'income', 'bill', 'sinking_fund', 'debt'].includes(recordType) && !name) { errors.push(`Row ${rowNumber}: ${recordType} requires a name.`); return; }
+    if (recordType === 'budget' && !(data.category || name)) { errors.push(`Row ${rowNumber}: budget requires a category.`); return; }
+    if (recordType === 'rule' && !data.pattern) { errors.push(`Row ${rowNumber}: rule requires a pattern.`); return; }
+    if (['income', 'bill'].includes(recordType)) {
+      const frequency = setupFrequency(data.frequency);
+      const nextDate = parseDateFlexible(data.next_date || data.nextdate);
+      if (!frequency) { errors.push(`Row ${rowNumber}: ${name} has an invalid frequency.`); return; }
+      if (!nextDate) { errors.push(`Row ${rowNumber}: ${name} requires a valid next_date.`); return; }
+    }
+    records.push({ rowNumber, recordType, data });
+  });
+  return { records, errors };
+}
+function setupImportSummary(plan) {
+  const counts = {};
+  plan.records.forEach(r => counts[r.recordType] = (counts[r.recordType] || 0) + 1);
+  const labels = { account: 'accounts', income: 'income schedules', bill: 'bills', budget: 'spending limits', sinking_fund: 'sinking funds', debt: 'debts', rule: 'matching rules' };
+  return Object.entries(counts).map(([type, count]) => `<div class="list-item"><span>${escapeHtml(labels[type] || type)}</span><strong>${count}</strong></div>`).join('');
+}
+async function handleSetupFile(event) {
+  const file = event.target.files[0]; event.target.value = '';
+  if (!file) return;
+  try {
+    const rows = csvParse(await file.text());
+    if (rows.length < 2) throw new Error('The setup CSV does not contain any data rows.');
+    const plan = buildSetupImportPlan(rows);
+    const errorList = plan.errors.length ? `<div class="notice danger"><strong>${plan.errors.length} row(s) cannot be imported.</strong><ul>${plan.errors.slice(0, 12).map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>${plan.errors.length > 12 ? `<p>Only the first 12 errors are shown.</p>` : ''}</div>` : '<div class="notice success">All rows passed the basic validation checks.</div>';
+    openModal('Review quick setup import', `<div class="notice">Existing records with the same name or category will be updated instead of duplicated. A safety snapshot is created before import.</div><div class="grid two" style="margin-top:14px"><div class="card"><h3>Ready to import</h3><div class="list">${setupImportSummary(plan) || '<div class="empty-state">No valid rows.</div>'}</div></div><div>${errorList}</div></div><div class="button-row end" style="margin-top:16px"><button class="secondary-button" id="cancelSetupImport">Cancel</button><button class="primary-button" id="confirmSetupImport" ${plan.records.length ? '' : 'disabled'}>Import ${plan.records.length} record(s)</button></div>`, { wide: true });
+    $('#cancelSetupImport').onclick = closeModal;
+    $('#confirmSetupImport').onclick = () => applySetupImport(plan);
+  } catch (error) { toast(error.message, 'error'); }
+}
+async function applySetupImport(plan) {
+  await storage.addSnapshot(structuredClone(state), 'Before quick setup import').catch(() => null);
+  const results = { added: 0, updated: 0, skipped: plan.errors.length };
+  const keyName = item => String(item.name || '').trim().toLowerCase();
+  const keyCategory = item => String(item.category || '').trim().toLowerCase();
+  const keyPattern = item => String(item.pattern || '').trim().toLowerCase();
+
+  for (const record of plan.records.filter(r => r.recordType === 'account')) {
+    const d = record.data;
+    const outcome = upsertImported('accounts', keyName, { id: uid('acct'), name: d.name, type: setupAccountType(d.type), active: setupBoolean(d.active, true) });
+    results[outcome]++;
+  }
+
+  for (const record of plan.records.filter(r => r.recordType !== 'account')) {
+    const d = record.data;
+    const accountId = findAccountByName(d.account)?.id || '';
+    let outcome = 'skipped';
+    if (record.recordType === 'income') {
+      const nextDate = parseDateFlexible(d.next_date || d.nextdate);
+      outcome = upsertImported('incomes', keyName, { id: uid('income'), name: d.name, amount: parseMoney(d.amount), frequency: setupFrequency(d.frequency), nextDate, dayOfMonth: toDate(nextDate).getDate(), accountId, variable: setupBoolean(d.variable, false), active: setupBoolean(d.active, true), notes: d.notes || '', overrides: {} });
+    } else if (record.recordType === 'bill') {
+      const nextDate = parseDateFlexible(d.next_date || d.nextdate);
+      const incoming = { id: uid('bill'), name: d.name, category: d.category || 'Uncategorised', amount: parseMoney(d.amount), frequency: setupFrequency(d.frequency), nextDate, dayOfMonth: toDate(nextDate).getDate(), accountId, automatic: setupBoolean(d.automatic, false), variable: setupBoolean(d.variable, false), active: setupBoolean(d.active, true), notes: d.notes || '', overrides: {}, amountHistory: [] };
+      const existing = state.bills.find(x => keyName(x) === keyName(incoming));
+      if (existing && number(existing.amount) !== number(incoming.amount)) incoming.amountHistory = [...(existing.amountHistory || []), { effectiveAt: new Date().toISOString(), previousAmount: number(existing.amount), amount: number(incoming.amount), source: 'quick setup import' }];
+      outcome = upsertImported('bills', keyName, incoming);
+    } else if (record.recordType === 'budget') {
+      outcome = upsertImported('budgets', keyCategory, { id: uid('budget'), category: d.category || d.name, amount: parseMoney(d.amount), active: setupBoolean(d.active, true) });
+    } else if (record.recordType === 'sinking_fund') {
+      outcome = upsertImported('sinkingFunds', keyName, { id: uid('fund'), name: d.name, target: parseMoney(d.target), balance: parseMoney(d.balance), contribution: parseMoney(d.contribution), active: setupBoolean(d.active, true) });
+    } else if (record.recordType === 'debt') {
+      outcome = upsertImported('debts', keyName, { id: uid('debt'), name: d.name, balance: parseMoney(d.balance), interestRate: parseMoney(d.interest_rate), minimumPayment: parseMoney(d.minimum_payment), extraPayment: parseMoney(d.extra_payment), active: setupBoolean(d.active, true) });
+    } else if (record.recordType === 'rule') {
+      const txType = ['income', 'expense', 'transfer'].includes(String(d.type).toLowerCase()) ? String(d.type).toLowerCase() : 'expense';
+      outcome = upsertImported('rules', keyPattern, { id: uid('rule'), pattern: d.pattern, merchant: d.merchant || '', category: d.category || '', type: txType });
+    }
+    results[outcome]++;
+  }
+
+  await commit(`Quick setup import: ${results.added} added, ${results.updated} updated`, true);
+  closeModal(); render();
+  toast(`Setup imported: ${results.added} added, ${results.updated} updated${results.skipped ? `, ${results.skipped} skipped` : ''}.`, results.skipped ? 'info' : 'success');
+}
 
 async function handleStatementFile(event) {
   const file=event.target.files[0];event.target.value='';if(!file)return;
