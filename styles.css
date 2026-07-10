@@ -246,3 +246,8 @@ html[data-theme="dark"] ::-webkit-scrollbar { width: 11px; height: 11px; }
 html[data-theme="dark"] ::-webkit-scrollbar-track { background: #081118; }
 html[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #2b4352; border: 3px solid #081118; border-radius: 999px; }
 html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #3a596b; }
+
+/* v1.4 ASB sync */
+[data-bank-account-row] select { min-width: 180px; }
+html[data-theme="dark"] [data-bank-account-row] { background: rgba(255,255,255,.006); }
+html[data-theme="dark"] [data-bank-account-row]:hover { background: var(--hover); }
