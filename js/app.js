@@ -1,4 +1,4 @@
-// Fortnight Finance v2.0 application module. This file belongs in /js/app.js only.
+// Fortnight Finance v3.0 application module. This file belongs in /js/app.js only.
 import { storage } from './storage.js';
 import {
   cloudConfigured, getSession, signIn, signUp, signInMicrosoft, signOut,
@@ -46,7 +46,7 @@ const titles = {
 function defaultState() {
   const today = todayISO();
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     settings: {
@@ -115,7 +115,7 @@ function migrate(input) {
   for (const key of ['availableAccounts', 'accountMappings', 'loanMappings', 'reviewItems', 'syncHistory']) {
     merged.bankSync[key] = Array.isArray(input.bankSync?.[key]) ? input.bankSync[key] : base.bankSync[key];
   }
-  merged.schemaVersion = 3;
+  merged.schemaVersion = 4;
   return merged;
 }
 
@@ -338,6 +338,7 @@ function bindViewEvents() {
       'edit-fund': () => openFundForm(id),
       'delete-fund': () => deleteEntity('sinkingFunds', id, 'sinking fund'),
       'add-debt': () => openDebtForm(),
+      'add-credit-card': () => openDebtForm('', 'credit-card'),
       'bank-load-accounts': () => loadBankAccounts(),
       'bank-sync-now': () => runBankSync(),
       'bank-clean-duplicates': () => reconcileBankTransactions(),
@@ -435,14 +436,25 @@ function plannedSummary(period = getPeriod()) {
   const income = incomeOccurrences(period).reduce((sum, i) => sum + i.occurrenceAmount, 0);
   const budgets = state.budgets.filter(x => x.active).reduce((sum, x) => sum + number(x.amount), 0);
   const funds = state.sinkingFunds.filter(x => x.active).reduce((sum, x) => sum + number(x.contribution), 0);
-  const debts = state.debts.filter(x => x.active).reduce((sum, x) => sum + number(x.minimumPayment) + number(x.extraPayment), 0);
+  const debts = state.debts.filter(x => x.active).reduce((sum, x) => sum + number(x.extraPayment), 0);
   return { income, bills, budgets, funds, debts, remaining: number(state.settings.openingBalance) + income - bills - budgets - funds - debts };
 }
 function actualSummary(period = getPeriod()) {
   const tx = periodTransactions(period);
   const income = tx.filter(t => t.type === 'income').reduce((sum, t) => sum + number(t.amount), 0);
-  const expenses = tx.filter(t => t.type === 'expense').reduce((sum, t) => sum + number(t.amount), 0);
-  return { income, expenses, remaining: number(state.settings.openingBalance) + income - expenses };
+  const expenseTransactions = tx.filter(t => t.type === 'expense');
+  const expenses = expenseTransactions.reduce((sum, t) => sum + number(t.amount), 0);
+  const billsPaid = expenseTransactions.filter(t => t.matchedBillId || t.matchedOccurrenceKey).reduce((sum, t) => sum + number(t.amount), 0);
+  const variableSpent = expenseTransactions.filter(t => !t.matchedBillId && !t.matchedOccurrenceKey).reduce((sum, t) => sum + number(t.amount), 0);
+  const transfersIgnored = tx.filter(t => t.type === 'transfer').reduce((sum, t) => sum + number(t.amount), 0);
+  return {
+    income,
+    expenses,
+    billsPaid,
+    variableSpent,
+    transfersIgnored,
+    remaining: number(state.settings.openingBalance) + income - expenses
+  };
 }
 
 function renderPeriodBar() {
@@ -460,7 +472,8 @@ function renderPeriodBar() {
 
 function renderDashboard() {
   const period = getPeriod();
-  const planned = plannedSummary(period); const actual = actualSummary(period);
+  const planned = plannedSummary(period);
+  const actual = actualSummary(period);
   const occurrences = billOccurrences(period);
   const weekBoundary = isoDate(addDays(period.start, 6));
   const week1 = occurrences.filter(x => x.occurrenceDate <= weekBoundary);
@@ -470,13 +483,16 @@ function renderDashboard() {
     const spent = periodTransactions(period).filter(t => t.type === 'expense' && t.category === b.category).reduce((s, t) => s + number(t.amount), 0);
     return { ...b, spent, difference: number(b.amount) - spent };
   }).filter(x => x.difference < 0);
+  const expectedIncomeCount = incomeOccurrences(period).length;
+  const receivedIncomeCount = periodTransactions(period).filter(t => t.type === 'income').length;
+  const unpaidCount = occurrences.filter(x => !x.paid).length;
 
   return `${renderPeriodBar()}
     <div class="grid cards">
-      ${metricCard('Planned income', money(planned.income), `${incomeOccurrences(period).length} scheduled payment(s)`, 'good')}
-      ${metricCard('Bills due', money(planned.bills), `${occurrences.filter(x => !x.paid).length} still unpaid`, occurrences.some(x => !x.paid) ? 'warn' : 'good')}
-      ${metricCard('Planned money left', money(planned.remaining), 'After bills, limits, funds and debt', planned.remaining < 0 ? 'bad' : 'good')}
-      ${metricCard('Actual position', money(actual.remaining), `${money(actual.expenses)} spent`, actual.remaining < 0 ? 'bad' : 'good')}
+      ${metricCard('Planned income', money(planned.income), `${expectedIncomeCount} scheduled payment(s)`, 'good')}
+      ${metricCard('Total planned out', money(planned.bills + planned.budgets + planned.funds + planned.debts), `${unpaidCount} bill(s) still unpaid`, unpaidCount ? 'warn' : 'good')}
+      ${metricCard('Income received', money(actual.income), `${receivedIncomeCount} actual deposit(s) recorded`, actual.income < planned.income ? 'warn' : 'good')}
+      ${metricCard('Cash remaining', money(actual.remaining), `${money(actual.expenses)} actually spent`, actual.remaining < 0 ? 'bad' : 'good')}
     </div>
 
     <div class="grid two" style="margin-top:18px">
@@ -486,23 +502,34 @@ function renderDashboard() {
 
     <div class="grid two" style="margin-top:18px">
       <div class="card">
-        <div class="section-header" style="margin:0 0 8px"><h2>Fortnight allocation</h2></div>
-        ${summaryLine('Bills', planned.bills)}
+        <div class="section-header" style="margin:0 0 8px"><h2>Fortnight plan</h2></div>
+        ${summaryLine('Bills scheduled', planned.bills)}
         ${summaryLine('Variable spending limits', planned.budgets)}
-        ${summaryLine('Sinking funds', planned.funds)}
-        ${summaryLine('Debt payments', planned.debts)}
-        ${summaryLine('Total planned out', planned.bills + planned.budgets + planned.funds + planned.debts, true)}
+        ${summaryLine('Sinking-fund contributions', planned.funds)}
+        ${summaryLine('Separate debt planning', planned.debts)}
+        ${summaryLine('Planned money remaining', planned.remaining, true)}
       </div>
       <div class="card">
-        <h2>Review required</h2>
-        ${unplanned.length || overspent.length ? `
-          ${unplanned.length ? `<div class="notice warning">${unplanned.length} imported or entered expense(s) are uncategorised.</div>` : ''}
-          ${overspent.length ? `<div class="notice danger" style="margin-top:10px">${overspent.length} spending categor${overspent.length === 1 ? 'y is' : 'ies are'} over budget.</div>` : ''}
-          <div class="list" style="margin-top:10px">
-            ${unplanned.slice(0, 4).map(t => `<div class="list-item"><div><strong>${escapeHtml(t.description)}</strong><span>${formatShortDate(t.date)} · Uncategorised</span></div><strong>${money(t.amount)}</strong></div>`).join('')}
-            ${overspent.slice(0, 4).map(b => `<div class="list-item"><div><strong>${escapeHtml(b.category)}</strong><span>Over the ${money(b.amount)} limit</span></div><strong class="negative">${money(Math.abs(b.difference))}</strong></div>`).join('')}
-          </div>` : `<div class="empty-state"><strong>No immediate issues</strong>No uncategorised spending or overspent limits in this fortnight.</div>`}
+        <div class="section-header" style="margin:0 0 8px"><h2>Actual fortnight summary</h2></div>
+        ${summaryLine('Income received', actual.income)}
+        ${summaryLine('Matched bills paid', actual.billsPaid)}
+        ${summaryLine('Other spending', actual.variableSpent)}
+        ${summaryLine('Transfers ignored', actual.transfersIgnored)}
+        ${summaryLine('Cash remaining', actual.remaining, true)}
+        <div class="muted small" style="margin-top:10px">Cash remaining uses only recorded income and real expenses. Internal transfers are shown for reference but excluded.</div>
       </div>
+    </div>
+
+    <div class="card" style="margin-top:18px">
+      <h2>Review required</h2>
+      ${unplanned.length || overspent.length || actual.income < planned.income ? `
+        ${actual.income < planned.income ? `<div class="notice warning">Only ${money(actual.income)} of ${money(planned.income)} planned income has been recorded so far.</div>` : ''}
+        ${unplanned.length ? `<div class="notice warning" style="margin-top:10px">${unplanned.length} imported or entered expense(s) are uncategorised.</div>` : ''}
+        ${overspent.length ? `<div class="notice danger" style="margin-top:10px">${overspent.length} spending categor${overspent.length === 1 ? 'y is' : 'ies are'} over budget.</div>` : ''}
+        <div class="list" style="margin-top:10px">
+          ${unplanned.slice(0, 4).map(t => `<div class="list-item"><div><strong>${escapeHtml(t.description)}</strong><span>${formatShortDate(t.date)} · Uncategorised</span></div><strong>${money(t.amount)}</strong></div>`).join('')}
+          ${overspent.slice(0, 4).map(b => `<div class="list-item"><div><strong>${escapeHtml(b.category)}</strong><span>Over the ${money(b.amount)} limit</span></div><strong class="negative">${money(Math.abs(b.difference))}</strong></div>`).join('')}
+        </div>` : `<div class="empty-state"><strong>No immediate issues</strong>No missing income, uncategorised spending or overspent limits in this fortnight.</div>`}
     </div>`;
 }
 
@@ -577,8 +604,57 @@ function renderTransactions() {
     </tbody></table></div>`;
 }
 
+function debtTypeLabel(value = 'other') {
+  const labels = {
+    mortgage: 'Mortgage',
+    'personal-loan': 'Personal loan',
+    'credit-card': 'Credit card',
+    afterpay: 'Afterpay / BNPL',
+    other: 'Other debt'
+  };
+  return labels[value] || labels.other;
+}
+
+function linkedDebtBill(debt) {
+  if (debt.linkedBillId) return state.bills.find(bill => bill.id === debt.linkedBillId) || null;
+  const debtText = normalisedBankText(debt.name || '');
+  const candidates = state.bills.filter(bill => {
+    const billText = normalisedBankText(bill.name || '');
+    return debtText && (billText.includes(debtText) || debtText.includes(billText));
+  });
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function linkedBankAccount(debt) {
+  return (state.bankSync?.availableAccounts || []).find(account => account.id === debt.bankAccountId) || null;
+}
+
+function debtDisplayedBalance(debt) {
+  const bankAccount = linkedBankAccount(debt);
+  if (bankAccount?.balance && Number.isFinite(Number(bankAccount.balance.current))) {
+    return { amount: Math.abs(number(bankAccount.balance.current)), source: 'ASB balance' };
+  }
+  return { amount: number(debt.balance), source: 'Manual balance' };
+}
+
+function debtPaymentStatus(debt, period = getPeriod()) {
+  const bill = linkedDebtBill(debt);
+  if (!bill) return { bill: null, amount: 0, paid: false, due: false, nextDate: '', status: 'Not linked' };
+  const occurrences = billOccurrences(period).filter(item => item.id === bill.id);
+  const current = occurrences[0] || null;
+  return {
+    bill,
+    amount: current ? current.occurrenceAmount : number(bill.amount),
+    paid: Boolean(current?.paid),
+    due: Boolean(current && !current.paid),
+    nextDate: current?.occurrenceDate || nextDueDate(bill),
+    status: current ? (current.paid ? 'Paid' : 'Due') : 'Upcoming'
+  };
+}
+
 function renderPlanning() {
-  const period = getPeriod(); const tx = periodTransactions(period);
+  const period = getPeriod();
+  const tx = periodTransactions(period);
   return `<div class="grid two">
     <div>
       <div class="section-header"><h2>Fortnightly spending limits</h2><button class="primary-button" data-action="add-budget">+ Add</button></div>
@@ -591,26 +667,25 @@ function renderPlanning() {
       <div class="card">${state.sinkingFunds.length ? state.sinkingFunds.map(item => { const pct = item.target > 0 ? Math.min(100, item.balance/item.target*100) : 0; return `<div class="list-item"><div style="flex:1"><strong>${escapeHtml(item.name)}</strong><span>${money(item.balance)} of ${money(item.target)} · ${money(item.contribution)}/fortnight</span><div class="progress"><span style="width:${pct}%"></span></div></div><div class="actions"><button class="secondary-button" data-action="edit-fund" data-id="${item.id}">Edit</button><button class="text-button negative" data-action="delete-fund" data-id="${item.id}">Delete</button></div></div>`; }).join('') : '<div class="empty-state">No sinking funds.</div>'}</div>
     </div>
   </div>
-  <div class="section-header"><h2>Debt payments</h2><button class="primary-button" data-action="add-debt">+ Add debt</button></div>
-  <div class="table-wrap"><table><thead><tr><th>Debt</th><th>Balance</th><th>Interest</th><th>Minimum</th><th>Extra</th><th>Total / fortnight</th><th>Actions</th></tr></thead><tbody>
-    ${state.debts.length ? state.debts.map(item => `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${money(item.balance)}</td><td>${number(item.interestRate).toFixed(2)}%</td><td>${money(item.minimumPayment)}</td><td>${money(item.extraPayment)}</td><td>${money(number(item.minimumPayment)+number(item.extraPayment))}</td><td class="actions"><button class="secondary-button" data-action="edit-debt" data-id="${item.id}">Edit</button><button class="text-button negative" data-action="delete-debt" data-id="${item.id}">Delete</button></td></tr>`).join('') : `<tr><td colspan="7"><div class="empty-state">No debts added.</div></td></tr>`}
-  </tbody></table></div>`;
-}
 
-
-function formatDateTime(value) {
-  if (!value) return 'Never';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Unknown';
-  return new Intl.DateTimeFormat('en-NZ', {
-    dateStyle: 'medium', timeStyle: 'short', timeZone: 'Pacific/Auckland'
-  }).format(date);
-}
-
-function linkedScheduleName(rule) {
-  if (rule.scheduleKind === 'bill') return state.bills.find(item => item.id === rule.scheduleId)?.name || 'Missing bill';
-  if (rule.scheduleKind === 'income') return state.incomes.find(item => item.id === rule.scheduleId)?.name || 'Missing income';
-  return 'None';
+  <div class="section-header"><div><h2>Debt and credit accounts</h2><div class="muted small">Link each record to its scheduled bill. Link an ASB account when Akahu supplies a live balance.</div></div><div class="button-row"><button class="secondary-button" data-action="add-credit-card">+ Add credit card</button><button class="primary-button" data-action="add-debt">+ Add debt</button></div></div>
+  <div class="table-wrap"><table><thead><tr><th>Debt</th><th>Balance</th><th>Payment this fortnight</th><th>Next payment</th><th>Status</th><th>Available credit</th><th>Actions</th></tr></thead><tbody>
+    ${state.debts.length ? state.debts.map(item => {
+      const balance = debtDisplayedBalance(item);
+      const payment = debtPaymentStatus(item, period);
+      const availableCredit = item.debtType === 'credit-card' && number(item.creditLimit) > 0 ? Math.max(0, number(item.creditLimit) - balance.amount) : null;
+      return `<tr>
+        <td><strong>${escapeHtml(item.name)}</strong><div class="muted small">${escapeHtml(debtTypeLabel(item.debtType))}${payment.bill ? ` · ${escapeHtml(payment.bill.name)}` : ' · No bill linked'}</div></td>
+        <td>${money(balance.amount)}<div class="muted small">${escapeHtml(balance.source)}</div></td>
+        <td>${payment.bill ? money(payment.amount) : '—'}</td>
+        <td>${payment.nextDate ? formatDate(payment.nextDate) : '—'}</td>
+        <td><span class="status ${payment.paid ? 'paid' : payment.due ? 'due' : 'upcoming'}">${escapeHtml(payment.status)}</span></td>
+        <td>${availableCredit === null ? '—' : money(availableCredit)}${item.debtType === 'credit-card' && number(item.creditLimit) > 0 ? `<div class="muted small">Limit ${money(item.creditLimit)}</div>` : ''}</td>
+        <td class="actions"><button class="secondary-button" data-action="edit-debt" data-id="${item.id}">Edit</button><button class="text-button negative" data-action="delete-debt" data-id="${item.id}">Delete</button></td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="7"><div class="empty-state"><strong>No debt or credit records</strong>Add your mortgage, personal loan, Afterpay and credit card, then link each to the matching bill schedule.</div></td></tr>`}
+  </tbody></table></div>
+  <div class="notice" style="margin-top:14px"><strong>Balance handling:</strong> the app uses the ASB/Akahu balance when a bank account is linked and a balance is available. Otherwise, update the balance manually. It does not subtract the full repayment because repayments may include interest.</div>`;
 }
 
 function renderBankSync() {
@@ -713,6 +788,12 @@ function renderSettings() {
 
 function accountName(id) { return state.accounts.find(a => a.id === id)?.name || 'Not selected'; }
 function accountOptions(selected = '') { return state.accounts.filter(a => a.active).map(a => `<option value="${a.id}" ${a.id === selected ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join(''); }
+function bankAccountOptions(selected = '') {
+  return (state.bankSync?.availableAccounts || []).map(account => `<option value="${escapeHtml(account.id)}" ${account.id === selected ? 'selected' : ''}>${escapeHtml(account.name)} · ${escapeHtml(account.masked || 'number hidden')}</option>`).join('');
+}
+function billOptions(selected = '') {
+  return state.bills.filter(bill => bill.active !== false).map(bill => `<option value="${bill.id}" ${bill.id === selected ? 'selected' : ''}>${escapeHtml(bill.name)} · ${money(bill.amount)}</option>`).join('');
+}
 function categoryList() {
   return [...new Set([
     ...state.bills.map(x => x.category), ...state.budgets.map(x => x.category), ...state.rules.map(x => x.category),
@@ -791,10 +872,50 @@ function openFundForm(id = '') {
   openModal(id ? 'Edit sinking fund' : 'Add sinking fund', `<form id="simpleForm"><div class="form-grid"><label class="full">Fund name<input name="name" value="${escapeHtml(item.name||'')}" required></label><label>Target<input name="target" type="number" min="0" step="0.01" value="${number(item.target)}"></label><label>Current balance<input name="balance" type="number" min="0" step="0.01" value="${number(item.balance)}"></label><label>Contribution per fortnight<input name="contribution" type="number" min="0" step="0.01" value="${number(item.contribution)}"></label><label class="checkbox-row"><input name="active" type="checkbox" ${item.active!==false?'checked':''}> Active</label></div><div class="button-row end"><button class="primary-button">Save</button></div></form>`);
   $('#simpleForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);upsert('sinkingFunds',{...item,id:item.id||uid('fund'),name:f.get('name').trim(),target:number(f.get('target')),balance:number(f.get('balance')),contribution:number(f.get('contribution')),active:f.has('active')},id?'Updated sinking fund':'Added sinking fund');closeModal();};
 }
-function openDebtForm(id = '') {
-  const item=state.debts.find(x=>x.id===id)||{balance:0,interestRate:0,minimumPayment:0,extraPayment:0,active:true};
-  openModal(id?'Edit debt':'Add debt',`<form id="simpleForm"><div class="form-grid"><label class="full">Debt name<input name="name" value="${escapeHtml(item.name||'')}" required></label><label>Current balance<input name="balance" type="number" min="0" step="0.01" value="${number(item.balance)}"></label><label>Interest rate (%)<input name="interestRate" type="number" min="0" step="0.01" value="${number(item.interestRate)}"></label><label>Minimum per fortnight<input name="minimumPayment" type="number" min="0" step="0.01" value="${number(item.minimumPayment)}"></label><label>Extra per fortnight<input name="extraPayment" type="number" min="0" step="0.01" value="${number(item.extraPayment)}"></label><label class="checkbox-row"><input name="active" type="checkbox" ${item.active!==false?'checked':''}> Active</label></div><div class="button-row end"><button class="primary-button">Save</button></div></form>`);
-  $('#simpleForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);upsert('debts',{...item,id:item.id||uid('debt'),name:f.get('name').trim(),balance:number(f.get('balance')),interestRate:number(f.get('interestRate')),minimumPayment:number(f.get('minimumPayment')),extraPayment:number(f.get('extraPayment')),active:f.has('active')},id?'Updated debt':'Added debt');closeModal();};
+function openDebtForm(id = '', preferredType = '') {
+  const item = state.debts.find(x => x.id === id) || {
+    debtType: preferredType || 'other',
+    balance: 0,
+    creditLimit: 0,
+    interestRate: 0,
+    minimumPayment: 0,
+    extraPayment: 0,
+    linkedBillId: '',
+    bankAccountId: '',
+    active: true
+  };
+  openModal(id ? 'Edit debt or credit account' : (preferredType === 'credit-card' ? 'Add credit card' : 'Add debt'), `<form id="simpleForm"><div class="form-grid">
+    <label>Debt name<input name="name" value="${escapeHtml(item.name || '')}" required></label>
+    <label>Type<select name="debtType">
+      ${['mortgage','personal-loan','credit-card','afterpay','other'].map(value => `<option value="${value}" ${item.debtType === value ? 'selected' : ''}>${escapeHtml(debtTypeLabel(value))}</option>`).join('')}
+    </select></label>
+    <label>Current balance<input name="balance" type="number" min="0" step="0.01" value="${number(item.balance)}"><span class="help">Manual fallback when a live ASB balance is unavailable.</span></label>
+    <label>Credit limit<input name="creditLimit" type="number" min="0" step="0.01" value="${number(item.creditLimit)}"><span class="help">Used only for credit cards.</span></label>
+    <label>Interest rate (%)<input name="interestRate" type="number" min="0" step="0.01" value="${number(item.interestRate)}"></label>
+    <label>Linked scheduled bill<select name="linkedBillId"><option value="">Not linked</option>${billOptions(item.linkedBillId || '')}</select><span class="help">This provides the payment amount, due date and paid status.</span></label>
+    <label>Linked ASB/Akahu account<select name="bankAccountId"><option value="">Use manual balance</option>${bankAccountOptions(item.bankAccountId || '')}</select><span class="help">Load ASB accounts first. A supplied bank balance overrides the manual balance display.</span></label>
+    <label>Separate extra payment<input name="extraPayment" type="number" min="0" step="0.01" value="${number(item.extraPayment)}"><span class="help">Optional extra not already included in the linked bill.</span></label>
+    <label class="checkbox-row"><input name="active" type="checkbox" ${item.active !== false ? 'checked' : ''}> Active</label>
+  </div><div class="button-row end"><button class="primary-button">Save</button></div></form>`);
+  $('#simpleForm').onsubmit = e => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    upsert('debts', {
+      ...item,
+      id: item.id || uid('debt'),
+      name: f.get('name').trim(),
+      debtType: f.get('debtType'),
+      balance: number(f.get('balance')),
+      creditLimit: number(f.get('creditLimit')),
+      interestRate: number(f.get('interestRate')),
+      minimumPayment: 0,
+      extraPayment: number(f.get('extraPayment')),
+      linkedBillId: f.get('linkedBillId'),
+      bankAccountId: f.get('bankAccountId'),
+      active: f.has('active')
+    }, id ? 'Updated debt or credit account' : 'Added debt or credit account');
+    closeModal();
+  };
 }
 function openAccountForm(id='') {
   const item=state.accounts.find(x=>x.id===id)||{type:'everyday',active:true};
