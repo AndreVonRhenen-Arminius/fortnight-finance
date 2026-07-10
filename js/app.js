@@ -1,4 +1,4 @@
-// Fortnight Finance v3.0 application module. This file belongs in /js/app.js only.
+// Fortnight Finance v3.1 application module. This file belongs in /js/app.js only.
 import { storage } from './storage.js';
 import {
   cloudConfigured, getSession, signIn, signUp, signInMicrosoft, signOut,
@@ -652,6 +652,21 @@ function debtPaymentStatus(debt, period = getPeriod()) {
   };
 }
 
+
+function debtProjectedBalance(debt, payment) {
+  const confirmed = debtDisplayedBalance(debt).amount;
+  const canProject = debt.debtType === 'afterpay' || debt.debtType === 'credit-card';
+  if (!canProject || !payment?.paid) {
+    return { amount: confirmed, changed: false, note: '' };
+  }
+  const paidAmount = Math.min(confirmed, number(payment.amount));
+  return {
+    amount: Math.max(0, confirmed - paidAmount),
+    changed: true,
+    note: `Projected after ${money(paidAmount)} paid`
+  };
+}
+
 function renderPlanning() {
   const period = getPeriod();
   const tx = periodTransactions(period);
@@ -673,10 +688,15 @@ function renderPlanning() {
     ${state.debts.length ? state.debts.map(item => {
       const balance = debtDisplayedBalance(item);
       const payment = debtPaymentStatus(item, period);
-      const availableCredit = item.debtType === 'credit-card' && number(item.creditLimit) > 0 ? Math.max(0, number(item.creditLimit) - balance.amount) : null;
+      const projected = debtProjectedBalance(item, payment);
+      const availableCredit = item.debtType === 'credit-card' && number(item.creditLimit) > 0 ? Math.max(0, number(item.creditLimit) - projected.amount) : null;
       return `<tr>
         <td><strong>${escapeHtml(item.name)}</strong><div class="muted small">${escapeHtml(debtTypeLabel(item.debtType))}${payment.bill ? ` · ${escapeHtml(payment.bill.name)}` : ' · No bill linked'}</div></td>
-        <td>${money(balance.amount)}<div class="muted small">${escapeHtml(balance.source)}</div></td>
+        <td>
+          ${money(projected.amount)}
+          <div class="muted small">${projected.changed ? escapeHtml(projected.note) : escapeHtml(balance.source)}</div>
+          ${projected.changed ? `<div class="muted small">Confirmed balance: ${money(balance.amount)}</div>` : ''}
+        </td>
         <td>${payment.bill ? money(payment.amount) : '—'}</td>
         <td>${payment.nextDate ? formatDate(payment.nextDate) : '—'}</td>
         <td><span class="status ${payment.paid ? 'paid' : payment.due ? 'due' : 'upcoming'}">${escapeHtml(payment.status)}</span></td>
@@ -685,7 +705,7 @@ function renderPlanning() {
       </tr>`;
     }).join('') : `<tr><td colspan="7"><div class="empty-state"><strong>No debt or credit records</strong>Add your mortgage, personal loan, Afterpay and credit card, then link each to the matching bill schedule.</div></td></tr>`}
   </tbody></table></div>
-  <div class="notice" style="margin-top:14px"><strong>Balance handling:</strong> the app uses the ASB/Akahu balance when a bank account is linked and a balance is available. Otherwise, update the balance manually. It does not subtract the full repayment because repayments may include interest.</div>`;
+  <div class="notice" style="margin-top:14px"><strong>Balance handling:</strong> mortgage and personal-loan balances are never reduced by the full repayment because repayments include interest. Afterpay and credit-card records show a projected balance after a recorded payment, while retaining the confirmed balance separately. New purchases, fees and refunds are not included until the balance is refreshed or edited.</div>`;
 }
 
 function renderBankSync() {
