@@ -1,8 +1,8 @@
-// Fortnight Finance v1.3.3 application module. This file belongs in /js/app.js only.
+// Fortnight Finance v1.4 application module. This file belongs in /js/app.js only.
 import { storage } from './storage.js';
 import {
   cloudConfigured, getSession, signIn, signUp, signInMicrosoft, signOut,
-  onAuthChange, loadRemote, saveRemote, overwriteRemote
+  onAuthChange, loadRemote, saveRemote, overwriteRemote, invokeBankSync
 } from './sync.js';
 import {
   exportBackup, readBackupPackage, chooseBackupFolder, restoreFolderHandle,
@@ -38,6 +38,7 @@ const titles = {
   income: ['Income', 'Regular and one-off income schedules'],
   transactions: ['Transactions', 'Actual money in and money out'],
   planning: ['Planning', 'Spending limits, sinking funds and debts'],
+  bank: ['ASB Sync', 'Read-only bank transaction updates through Akahu'],
   backup: ['Backup & Sync', 'Cloud status, exports and recovery'],
   settings: ['Settings', 'Accounts, fortnight dates and matching rules']
 };
@@ -45,7 +46,7 @@ const titles = {
 function defaultState() {
   const today = todayISO();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     settings: {
@@ -82,6 +83,19 @@ function defaultState() {
     debts: [],
     transactions: [],
     rules: [],
+    bankSync: {
+      enabled: true,
+      provider: 'Akahu / ASB',
+      availableAccounts: [],
+      accountMappings: [],
+      loanMappings: [],
+      reviewItems: [],
+      syncHistory: [],
+      lookbackDays: 45,
+      lastSuccessfulSync: '',
+      lastAttemptAt: '',
+      lastDataRefresh: ''
+    },
     audit: []
   };
 }
@@ -89,11 +103,19 @@ function defaultState() {
 function migrate(input) {
   const base = defaultState();
   if (!input || typeof input !== 'object') return base;
-  const merged = { ...base, ...input, settings: { ...base.settings, ...(input.settings || {}) } };
+  const merged = {
+    ...base,
+    ...input,
+    settings: { ...base.settings, ...(input.settings || {}) },
+    bankSync: { ...base.bankSync, ...(input.bankSync || {}) }
+  };
   for (const key of ['accounts', 'bills', 'incomes', 'budgets', 'sinkingFunds', 'debts', 'transactions', 'rules', 'audit']) {
     merged[key] = Array.isArray(input[key]) ? input[key] : base[key];
   }
-  merged.schemaVersion = 1;
+  for (const key of ['availableAccounts', 'accountMappings', 'loanMappings', 'reviewItems', 'syncHistory']) {
+    merged.bankSync[key] = Array.isArray(input.bankSync?.[key]) ? input.bankSync[key] : base.bankSync[key];
+  }
+  merged.schemaVersion = 2;
   return merged;
 }
 
@@ -278,7 +300,7 @@ function render() {
   const [title, subtitle] = titles[currentView];
   $('#pageTitle').textContent = title;
   $('#pageSubtitle').textContent = subtitle;
-  const renderers = { dashboard: renderDashboard, bills: renderBills, income: renderIncome, transactions: renderTransactions, planning: renderPlanning, backup: renderBackup, settings: renderSettings };
+  const renderers = { dashboard: renderDashboard, bills: renderBills, income: renderIncome, transactions: renderTransactions, planning: renderPlanning, bank: renderBankSync, backup: renderBackup, settings: renderSettings };
   $('#content').innerHTML = renderers[currentView]();
   bindViewEvents();
   if (currentView === 'backup') loadSnapshotsIntoView();
@@ -316,6 +338,13 @@ function bindViewEvents() {
       'edit-fund': () => openFundForm(id),
       'delete-fund': () => deleteEntity('sinkingFunds', id, 'sinking fund'),
       'add-debt': () => openDebtForm(),
+      'bank-load-accounts': () => loadBankAccounts(),
+      'bank-sync-now': () => runBankSync(),
+      'add-loan-mapping': () => openLoanMappingForm(),
+      'edit-loan-mapping': () => openLoanMappingForm(id),
+      'delete-loan-mapping': () => deleteLoanMapping(id),
+      'bank-review-confirm': () => confirmBankReview(id),
+      'bank-review-ignore': () => ignoreBankReview(id),
       'edit-debt': () => openDebtForm(id),
       'delete-debt': () => deleteEntity('debts', id, 'debt'),
       'add-account': () => openAccountForm(),
@@ -342,6 +371,10 @@ function bindViewEvents() {
 
   const settingsForm = $('#settingsForm');
   if (settingsForm) settingsForm.addEventListener('submit', saveSettings);
+  const bankMappingsForm = $('#bankMappingsForm');
+  if (bankMappingsForm) bankMappingsForm.addEventListener('submit', saveBankMappings);
+  const bankOptionsForm = $('#bankOptionsForm');
+  if (bankOptionsForm) bankOptionsForm.addEventListener('submit', saveBankOptions);
 }
 
 
@@ -563,6 +596,80 @@ function renderPlanning() {
   </tbody></table></div>`;
 }
 
+
+function formatDateTime(value) {
+  if (!value) return 'Never';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown';
+  return new Intl.DateTimeFormat('en-NZ', {
+    dateStyle: 'medium', timeStyle: 'short', timeZone: 'Pacific/Auckland'
+  }).format(date);
+}
+
+function linkedScheduleName(rule) {
+  if (rule.scheduleKind === 'bill') return state.bills.find(item => item.id === rule.scheduleId)?.name || 'Missing bill';
+  if (rule.scheduleKind === 'income') return state.incomes.find(item => item.id === rule.scheduleId)?.name || 'Missing income';
+  return 'None';
+}
+
+function renderBankSync() {
+  const bank = state.bankSync || {};
+  const available = Array.isArray(bank.availableAccounts) ? bank.availableAccounts : [];
+  const mappings = Array.isArray(bank.accountMappings) ? bank.accountMappings : [];
+  const loanMappings = Array.isArray(bank.loanMappings) ? bank.loanMappings : [];
+  const reviews = (bank.reviewItems || []).filter(item => item.status === 'open');
+  const history = Array.isArray(bank.syncHistory) ? bank.syncHistory : [];
+  const accountRows = available.map(account => {
+    const mapping = mappings.find(item => item.akahuAccountId === account.id) || {};
+    const canImport = (account.attributes || []).includes('TRANSACTIONS');
+    return `<tr data-bank-account-row data-account-id="${escapeHtml(account.id)}">
+      <td><strong>${escapeHtml(account.name)}</strong><div class="muted small">${escapeHtml(account.institution || 'ASB')} · ${escapeHtml(account.masked || 'Number hidden')}</div></td>
+      <td>${escapeHtml(account.type || 'Unknown')}</td>
+      <td>${account.balance ? money(account.balance.current) : 'Not supplied'}<div class="muted small">${escapeHtml(account.status || '')}</div></td>
+      <td>${formatDateTime(account.refreshedTransactions)}</td>
+      <td><select data-bank-local-account><option value="">Do not import</option>${accountOptions(mapping.localAccountId || '')}</select></td>
+      <td><label class="checkbox-row"><input data-bank-use type="checkbox" ${mapping.importTransactions !== false && mapping.localAccountId ? 'checked' : ''} ${canImport ? '' : 'disabled'}> Import</label>${canImport ? '' : '<div class="muted small">Transactions unavailable</div>'}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="notice warning"><strong>Read-only connection.</strong> The app retrieves account and transaction data through Akahu. It cannot make payments and never receives your ASB password or PIN.</div>
+    <div class="grid cards" style="margin-top:18px">
+      ${metricCard('Last successful sync', bank.lastSuccessfulSync ? formatDateTime(bank.lastSuccessfulSync) : 'Never', 'Cloud transaction update')}
+      ${metricCard('ASB data refreshed', bank.lastDataRefresh ? formatDateTime(bank.lastDataRefresh) : 'Unknown', 'Timestamp reported by Akahu')}
+      ${metricCard('Mapped accounts', String(mappings.filter(item => item.importTransactions !== false && item.localAccountId).length), `${available.length} account(s) discovered`)}
+      ${metricCard('Needs review', String(reviews.length), reviews.length ? 'Check uncertain matches' : 'No open bank reviews', reviews.length ? 'warn' : 'good')}
+    </div>
+
+    <div class="section-header"><div><h2>Connection and sync</h2><div class="muted small">Load account names first, map only the accounts you want, then run a sync.</div></div><div class="button-row"><button class="secondary-button" data-action="bank-load-accounts">Load ASB accounts</button><button class="primary-button" data-action="bank-sync-now">Sync ASB now</button></div></div>
+    <form id="bankOptionsForm" class="card"><div class="form-grid"><label>Rolling transaction lookback (days)<input name="lookbackDays" type="number" min="7" max="365" step="1" value="${number(bank.lookbackDays || 45)}"><span class="help">The sync rechecks this window to catch bank changes and avoid duplicates. Forty-five days is recommended.</span></label></div><div class="button-row end"><button class="primary-button">Save sync options</button></div></form>
+
+    <div class="section-header"><h2>ASB account mapping</h2></div>
+    <form id="bankMappingsForm">
+      <div class="table-wrap"><table><thead><tr><th>ASB account</th><th>Type</th><th>Balance</th><th>Transaction data refreshed</th><th>App account</th><th>Use</th></tr></thead><tbody>
+        ${accountRows || `<tr><td colspan="6"><div class="empty-state"><strong>No ASB accounts loaded</strong>Select Load ASB accounts after the Edge Function and secrets are configured.</div></td></tr>`}
+      </tbody></table></div>
+      ${available.length ? '<div class="button-row end" style="margin-top:12px"><button class="primary-button">Save account mapping</button></div>' : ''}
+    </form>
+
+    <div class="section-header"><div><h2>Loan repayment grouping</h2><div class="muted small">Map each ASB loan reference to one scheduled bill. Principal and interest are combined into the final repayment amount.</div></div><button class="primary-button" data-action="add-loan-mapping">+ Add loan mapping</button></div>
+    <div class="table-wrap"><table><thead><tr><th>ASB loan reference</th><th>Scheduled bill</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${loanMappings.length ? loanMappings.map(item => `<tr><td><strong>${escapeHtml(item.reference)}</strong><div class="muted small">Matches LOAN REPAYMENT ${escapeHtml(item.reference)}INTEREST and PRINCIPAL</div></td><td>${escapeHtml(state.bills.find(bill => bill.id === item.billId)?.name || 'Missing bill')}</td><td>${item.active !== false ? 'Active' : 'Paused'}</td><td class="actions"><button class="secondary-button" data-action="edit-loan-mapping" data-id="${item.id}">Edit</button><button class="text-button negative" data-action="delete-loan-mapping" data-id="${item.id}">Delete</button></td></tr>`).join('') : `<tr><td colspan="4"><div class="empty-state">Add 020 for the mortgage and 022 for the personal loan, mapped to the correct bill schedules.</div></td></tr>`}
+    </tbody></table></div>
+
+    <div class="section-header"><h2>Bank review queue</h2></div>
+    <div class="table-wrap"><table><thead><tr><th>Issue</th><th>Details</th><th>Date</th><th>Actions</th></tr></thead><tbody>
+      ${reviews.length ? reviews.map(item => {
+        const confirmable = item.occurrenceDate && (item.billId || item.scheduleId) && item.transactionSourceId;
+        return `<tr><td><strong>${escapeHtml(item.title || item.kind)}</strong></td><td>${escapeHtml(item.detail || '')}</td><td>${item.occurrenceDate ? formatDate(item.occurrenceDate) : escapeHtml(item.date || '—')}</td><td class="actions">${confirmable ? `<button class="primary-button" data-action="bank-review-confirm" data-id="${item.id}">Confirm match</button>` : ''}<button class="secondary-button" data-action="bank-review-ignore" data-id="${item.id}">Dismiss</button></td></tr>`;
+      }).join('') : `<tr><td colspan="4"><div class="empty-state">No bank items currently need review.</div></td></tr>`}
+    </tbody></table></div>
+
+    <div class="section-header"><h2>Recent sync history</h2></div>
+    <div class="table-wrap"><table><thead><tr><th>Time</th><th>Mode</th><th>Fetched</th><th>Added</th><th>Updated</th><th>Removed</th><th>Review</th></tr></thead><tbody>
+      ${history.length ? history.map(item => `<tr><td>${formatDateTime(item.at)}</td><td>${escapeHtml(item.mode || '')}</td><td>${number(item.fetched)}</td><td>${number(item.added)}</td><td>${number(item.updated)}</td><td>${number(item.removed)}</td><td>${number(item.review)}</td></tr>`).join('') : `<tr><td colspan="7"><div class="empty-state">No ASB sync has run yet.</div></td></tr>`}
+    </tbody></table></div>`;
+}
+
 function renderBackup() {
   return `<div class="grid two">
     <div class="card"><h2>Cloud synchronisation</h2>
@@ -598,8 +705,8 @@ function renderSettings() {
   <div class="section-header"><h2>Account nicknames</h2><button class="primary-button" data-action="add-account">+ Add account</button></div>
   <div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>${state.accounts.map(a => `<tr><td>${escapeHtml(a.name)}</td><td>${escapeHtml(a.type)}</td><td>${a.active ? 'Active' : 'Paused'}</td><td class="actions"><button class="secondary-button" data-action="edit-account" data-id="${a.id}">Edit</button><button class="text-button negative" data-action="delete-account" data-id="${a.id}">Delete</button></td></tr>`).join('')}</tbody></table></div>
   <div class="section-header"><h2>Statement matching rules</h2><button class="primary-button" data-action="add-rule">+ Add rule</button></div>
-  <div class="notice">A rule checks whether the bank description contains a phrase, then recommends a merchant, category and transaction type during import.</div>
-  <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Description contains</th><th>Merchant</th><th>Category</th><th>Type</th><th>Actions</th></tr></thead><tbody>${state.rules.length ? state.rules.map(r => `<tr><td>${escapeHtml(r.pattern)}</td><td>${escapeHtml(r.merchant || '')}</td><td>${escapeHtml(r.category || '')}</td><td>${escapeHtml(r.type || 'expense')}</td><td class="actions"><button class="secondary-button" data-action="edit-rule" data-id="${r.id}">Edit</button><button class="text-button negative" data-action="delete-rule" data-id="${r.id}">Delete</button></td></tr>`).join('') : `<tr><td colspan="5"><div class="empty-state">Rules can also be created later as statement descriptions become familiar.</div></td></tr>`}</tbody></table></div>
+  <div class="notice">A rule checks whether the bank description contains a phrase, then recommends a merchant, category and transaction type. Linking a schedule allows an exact bank match to mark a bill paid or income received.</div>
+  <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Description contains</th><th>Merchant</th><th>Category</th><th>Type</th><th>Linked schedule</th><th>Actions</th></tr></thead><tbody>${state.rules.length ? state.rules.map(r => `<tr><td>${escapeHtml(r.pattern)}</td><td>${escapeHtml(r.merchant || '')}</td><td>${escapeHtml(r.category || '')}</td><td>${escapeHtml(r.type || 'expense')}</td><td>${escapeHtml(linkedScheduleName(r))}</td><td class="actions"><button class="secondary-button" data-action="edit-rule" data-id="${r.id}">Edit</button><button class="text-button negative" data-action="delete-rule" data-id="${r.id}">Delete</button></td></tr>`).join('') : `<tr><td colspan="6"><div class="empty-state">Rules can also be created later as statement descriptions become familiar.</div></td></tr>`}</tbody></table></div>
   <div class="section-header"><h2>Danger zone</h2></div><div class="card"><div class="notice danger">Clearing data removes the local working copy. It does not automatically delete an existing cloud copy.</div><button class="danger-button" style="margin-top:12px" data-action="clear-all" type="button">Clear local app data</button></div>`;
 }
 
@@ -670,7 +777,7 @@ function openTransactionForm(id = '') {
     <label class="full">Notes<textarea name="notes">${escapeHtml(item.notes || '')}</textarea></label>
   </div><div class="button-row end"><button type="button" class="secondary-button" id="cancelForm">Cancel</button><button class="primary-button">Save transaction</button></div></form>`);
   $('#cancelForm').onclick = closeModal;
-  $('#transactionForm').onsubmit = e => { e.preventDefault(); const f = new FormData(e.target); const updated = { ...item, id: item.id || uid('tx'), date: f.get('date'), type: f.get('type'), description: f.get('description').trim(), amount: number(f.get('amount')), category: f.get('type') === 'transfer' ? 'Transfer' : f.get('category'), accountId: f.get('accountId'), notes: f.get('notes').trim(), source: item.source || 'manual' }; updated.fingerprint = fingerprintTransaction(updated); upsert('transactions', updated, id ? 'Updated transaction' : 'Added transaction'); closeModal(); };
+  $('#transactionForm').onsubmit = e => { e.preventDefault(); const f = new FormData(e.target); const updated = { ...item, id: item.id || uid('tx'), date: f.get('date'), type: f.get('type'), description: f.get('description').trim(), amount: number(f.get('amount')), category: f.get('type') === 'transfer' ? 'Transfer' : f.get('category'), accountId: f.get('accountId'), notes: f.get('notes').trim(), source: item.source || 'manual', bankUserEdited: Boolean(item.bankSourceId) || item.bankUserEdited }; updated.fingerprint = fingerprintTransaction(updated); upsert('transactions', updated, id ? 'Updated transaction' : 'Added transaction'); closeModal(); };
 }
 
 function openBudgetForm(id = '') {
@@ -695,8 +802,148 @@ function openAccountForm(id='') {
 }
 function openRuleForm(id='') {
   const item=state.rules.find(x=>x.id===id)||{type:'expense'};
-  openModal(id?'Edit matching rule':'Add matching rule',`<form id="simpleForm"><label>Bank description contains<input name="pattern" value="${escapeHtml(item.pattern||'')}" required></label><label>Clean merchant name<input name="merchant" value="${escapeHtml(item.merchant||'')}"></label><label>Category<input name="category" list="ruleCategories" value="${escapeHtml(item.category||'')}"><datalist id="ruleCategories">${categoryList().map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist></label><label>Type<select name="type"><option value="expense" ${item.type==='expense'?'selected':''}>Money out</option><option value="income" ${item.type==='income'?'selected':''}>Money in</option><option value="transfer" ${item.type==='transfer'?'selected':''}>Transfer</option></select></label><div class="button-row end"><button class="primary-button">Save</button></div></form>`);
-  $('#simpleForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);upsert('rules',{...item,id:item.id||uid('rule'),pattern:f.get('pattern').trim(),merchant:f.get('merchant').trim(),category:f.get('category').trim(),type:f.get('type')},id?'Updated matching rule':'Added matching rule');closeModal();};
+  openModal(id?'Edit matching rule':'Add matching rule',`<form id="simpleForm"><label>Bank description contains<input name="pattern" value="${escapeHtml(item.pattern||'')}" required></label><label>Clean merchant name<input name="merchant" value="${escapeHtml(item.merchant||'')}"></label><label>Category<input name="category" list="ruleCategories" value="${escapeHtml(item.category||'')}"><datalist id="ruleCategories">${categoryList().map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist></label><label>Type<select name="type"><option value="expense" ${item.type==='expense'?'selected':''}>Money out</option><option value="income" ${item.type==='income'?'selected':''}>Money in</option><option value="transfer" ${item.type==='transfer'?'selected':''}>Transfer</option></select></label><label>Linked schedule<select name="schedule"><option value="">No automatic paid/received match</option>${state.bills.map(b=>`<option value="bill:${b.id}" ${item.scheduleKind==='bill'&&item.scheduleId===b.id?'selected':''}>Bill — ${escapeHtml(b.name)}</option>`).join('')}${state.incomes.map(i=>`<option value="income:${i.id}" ${item.scheduleKind==='income'&&item.scheduleId===i.id?'selected':''}>Income — ${escapeHtml(i.name)}</option>`).join('')}</select><span class="help">Link only when this bank description reliably identifies one schedule.</span></label><div class="button-row end"><button class="primary-button">Save</button></div></form>`);
+  $('#simpleForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);const schedule=String(f.get('schedule')||'');const [scheduleKind,scheduleId]=schedule.includes(':')?schedule.split(':'):['',''];upsert('rules',{...item,id:item.id||uid('rule'),pattern:f.get('pattern').trim(),merchant:f.get('merchant').trim(),category:f.get('category').trim(),type:f.get('type'),scheduleKind,scheduleId},id?'Updated matching rule':'Added matching rule');closeModal();};
+}
+
+
+async function loadBankAccounts() {
+  if (!session || localOnly) return toast('Sign in with Microsoft before loading ASB accounts.', 'error');
+  updateSyncBadge('pending', 'Loading ASB accounts…');
+  try {
+    const result = await invokeBankSync({ action: 'accounts' });
+    state.bankSync.availableAccounts = Array.isArray(result.accounts) ? result.accounts : [];
+    state.bankSync.lastAccountsRefresh = new Date().toISOString();
+    await commit('Loaded ASB account list', true);
+    updateSyncBadge('synced', 'Cloud synced');
+    render();
+    toast(`${state.bankSync.availableAccounts.length} ASB account(s) loaded.`, 'success');
+  } catch (error) {
+    updateSyncBadge('error', 'ASB connection error');
+    toast(error.message, 'error');
+  }
+}
+
+async function saveBankMappings(event) {
+  event.preventDefault();
+  const rows = $$('[data-bank-account-row]', event.currentTarget);
+  state.bankSync.accountMappings = rows.map(row => {
+    const account = state.bankSync.availableAccounts.find(item => item.id === row.dataset.accountId) || {};
+    const localAccountId = $('[data-bank-local-account]', row).value;
+    const importTransactions = $('[data-bank-use]', row).checked && Boolean(localAccountId);
+    return {
+      akahuAccountId: row.dataset.accountId,
+      localAccountId,
+      importTransactions,
+      label: account.name || '',
+      masked: account.masked || ''
+    };
+  });
+  await commit('Updated ASB account mapping', true);
+  toast('ASB account mapping saved.', 'success');
+  render();
+}
+
+async function saveBankOptions(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  state.bankSync.lookbackDays = Math.min(365, Math.max(7, Math.round(number(form.get('lookbackDays')) || 45)));
+  await commit('Updated ASB sync options', true);
+  toast('ASB sync options saved.', 'success');
+  render();
+}
+
+async function runBankSync() {
+  if (!session || localOnly) return toast('Sign in with Microsoft before syncing ASB.', 'error');
+  if (!(state.bankSync.accountMappings || []).some(item => item.importTransactions !== false && item.localAccountId)) {
+    return toast('Map at least one ASB account to an app account first.', 'error');
+  }
+  updateSyncBadge('pending', 'Syncing ASB…');
+  try {
+    // Save mapping changes before the server-side function reads finance_state.
+    await storage.setState(state);
+    await saveRemote(state);
+    const result = await invokeBankSync({ action: 'sync', requestRefresh: true });
+    const remote = await loadRemote();
+    if (!remote?.state) throw new Error('ASB sync completed, but the cloud copy could not be reloaded.');
+    state = migrate(remote.state);
+    await storage.setState(state);
+    updateSyncBadge('synced', 'Cloud synced');
+    render();
+    const summary = result.summary || {};
+    toast(`ASB sync complete: ${number(summary.added)} added, ${number(summary.updated)} updated, ${number(summary.review)} to review.`, 'success');
+  } catch (error) {
+    updateSyncBadge('error', 'ASB sync error');
+    toast(error.message, 'error');
+  }
+}
+
+function openLoanMappingForm(id = '') {
+  const item = (state.bankSync.loanMappings || []).find(entry => entry.id === id) || { reference: '', billId: '', active: true };
+  openModal(id ? 'Edit loan mapping' : 'Add loan mapping', `<form id="loanMappingForm">
+    <label>ASB loan reference<input name="reference" value="${escapeHtml(item.reference || '')}" placeholder="020" maxlength="20" required><span class="help">Enter only the identifier between LOAN REPAYMENT and INTEREST/PRINCIPAL.</span></label>
+    <label>Scheduled bill<select name="billId" required><option value="">Select bill</option>${state.bills.map(bill => `<option value="${bill.id}" ${bill.id === item.billId ? 'selected' : ''}>${escapeHtml(bill.name)} — ${money(bill.amount)}</option>`).join('')}</select></label>
+    <label class="checkbox-row"><input name="active" type="checkbox" ${item.active !== false ? 'checked' : ''}> Active</label>
+    <div class="button-row end"><button type="button" id="cancelForm" class="secondary-button">Cancel</button><button class="primary-button">Save mapping</button></div>
+  </form>`);
+  $('#cancelForm').onclick = closeModal;
+  $('#loanMappingForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const reference = String(form.get('reference') || '').toUpperCase().replace(/\s+/g, '').trim();
+    if (!reference) return toast('Enter the ASB loan reference.', 'error');
+    const duplicate = (state.bankSync.loanMappings || []).find(entry => entry.id !== item.id && String(entry.reference).toUpperCase() === reference);
+    if (duplicate) return toast('That loan reference is already mapped.', 'error');
+    const updated = { ...item, id: item.id || uid('loanmap'), reference, billId: form.get('billId'), active: form.has('active') };
+    const index = state.bankSync.loanMappings.findIndex(entry => entry.id === updated.id);
+    if (index >= 0) state.bankSync.loanMappings[index] = updated; else state.bankSync.loanMappings.push(updated);
+    await commit(id ? 'Updated ASB loan mapping' : 'Added ASB loan mapping', true);
+    closeModal();
+    render();
+  };
+}
+
+async function deleteLoanMapping(id) {
+  if (!confirm('Delete this ASB loan mapping?')) return;
+  state.bankSync.loanMappings = (state.bankSync.loanMappings || []).filter(item => item.id !== id);
+  await commit('Deleted ASB loan mapping', true);
+  render();
+}
+
+function bankTransactionForReview(item) {
+  return state.transactions.find(tx => tx.bankSourceId === item.transactionSourceId || tx.id === item.transactionId);
+}
+
+async function confirmBankReview(id) {
+  const item = (state.bankSync.reviewItems || []).find(entry => entry.id === id);
+  if (!item) return;
+  const tx = bankTransactionForReview(item);
+  if (!tx) return toast('The related bank transaction was not found.', 'error');
+  const scheduleKind = item.scheduleKind || (item.billId ? 'bill' : '');
+  const scheduleId = item.scheduleId || item.billId;
+  if (!scheduleId || !item.occurrenceDate) return toast('This item cannot be confirmed automatically. Correct the mapping and sync again.', 'error');
+  tx.matchedOccurrenceKey = occurrenceKey(scheduleId, item.occurrenceDate);
+  if (scheduleKind === 'bill') {
+    tx.matchedBillId = scheduleId;
+    const bill = state.bills.find(entry => entry.id === scheduleId);
+    if (bill?.category) tx.category = bill.category;
+  } else if (scheduleKind === 'income') {
+    tx.category = 'Income';
+    tx.type = 'income';
+  }
+  item.status = 'confirmed';
+  item.resolvedAt = new Date().toISOString();
+  await commit('Confirmed ASB schedule match', true);
+  render();
+}
+
+async function ignoreBankReview(id) {
+  const item = (state.bankSync.reviewItems || []).find(entry => entry.id === id);
+  if (!item) return;
+  item.status = 'ignored';
+  item.resolvedAt = new Date().toISOString();
+  await commit('Dismissed ASB review item', true);
+  render();
 }
 
 function upsert(collection, item, reason) {

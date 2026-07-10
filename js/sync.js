@@ -125,3 +125,22 @@ export async function overwriteRemote(state) {
 }
 
 export function getRemoteVersion() { return remoteVersion; }
+
+export async function invokeBankSync(body = {}) {
+  if (!initCloud()) throw new Error('Cloud sync is not configured.');
+  const functionName = cfg.bankSyncFunctionName || 'asb-sync';
+  const { data, error } = await client.functions.invoke(functionName, { body });
+  if (error) {
+    const context = error.context;
+    let message = error.message || 'ASB sync failed.';
+    try {
+      const payload = context ? await context.json() : null;
+      if (payload?.error) message = payload.error;
+    } catch {
+      // Keep the original Supabase function error.
+    }
+    throw new Error(message);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
