@@ -1,4 +1,4 @@
-// Fortnight Finance v1.4 application module. This file belongs in /js/app.js only.
+// Fortnight Finance v2.0 application module. This file belongs in /js/app.js only.
 import { storage } from './storage.js';
 import {
   cloudConfigured, getSession, signIn, signUp, signInMicrosoft, signOut,
@@ -46,7 +46,7 @@ const titles = {
 function defaultState() {
   const today = todayISO();
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     settings: {
@@ -115,7 +115,7 @@ function migrate(input) {
   for (const key of ['availableAccounts', 'accountMappings', 'loanMappings', 'reviewItems', 'syncHistory']) {
     merged.bankSync[key] = Array.isArray(input.bankSync?.[key]) ? input.bankSync[key] : base.bankSync[key];
   }
-  merged.schemaVersion = 2;
+  merged.schemaVersion = 3;
   return merged;
 }
 
@@ -340,6 +340,7 @@ function bindViewEvents() {
       'add-debt': () => openDebtForm(),
       'bank-load-accounts': () => loadBankAccounts(),
       'bank-sync-now': () => runBankSync(),
+      'bank-clean-duplicates': () => reconcileBankTransactions(),
       'add-loan-mapping': () => openLoanMappingForm(),
       'edit-loan-mapping': () => openLoanMappingForm(id),
       'delete-loan-mapping': () => deleteLoanMapping(id),
@@ -640,7 +641,7 @@ function renderBankSync() {
       ${metricCard('Needs review', String(reviews.length), reviews.length ? 'Check uncertain matches' : 'No open bank reviews', reviews.length ? 'warn' : 'good')}
     </div>
 
-    <div class="section-header"><div><h2>Connection and sync</h2><div class="muted small">Load account names first, map only the accounts you want, then run a sync.</div></div><div class="button-row"><button class="secondary-button" data-action="bank-load-accounts">Load ASB accounts</button><button class="primary-button" data-action="bank-sync-now">Sync ASB now</button></div></div>
+    <div class="section-header"><div><h2>Connection and sync</h2><div class="muted small">Transfers do not count as spending. Exact bank payments replace manual bill records.</div></div><div class="button-row"><button class="secondary-button" data-action="bank-load-accounts">Load ASB accounts</button><button class="secondary-button" data-action="bank-clean-duplicates">Reconcile existing transactions</button><button class="primary-button" data-action="bank-sync-now">Sync ASB now</button></div></div>
     <form id="bankOptionsForm" class="card"><div class="form-grid"><label>Rolling transaction lookback (days)<input name="lookbackDays" type="number" min="7" max="365" step="1" value="${number(bank.lookbackDays || 45)}"><span class="help">The sync rechecks this window to catch bank changes and avoid duplicates. Forty-five days is recommended.</span></label></div><div class="button-row end"><button class="primary-button">Save sync options</button></div></form>
 
     <div class="section-header"><h2>ASB account mapping</h2></div>
@@ -807,6 +808,106 @@ function openRuleForm(id='') {
 }
 
 
+function normalisedBankText(value = '') {
+  return String(value).toUpperCase().replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function isInternalTransferDescription(value = '') {
+  const text = normalisedBankText(value);
+  return [
+    /^MB TRANSFER\b/,
+    /^FN TRANSFER\b/,
+    /\bTRANSFER TO\b/,
+    /\bTRANSFER FROM\b/,
+    /\bTRANSFER EX\b/,
+    /\bINTERNAL TRANSFER\b/,
+    /\bACCOUNT TRANSFER\b/
+  ].some(pattern => pattern.test(text));
+}
+
+function transactionPriority(tx) {
+  if (tx.bankProvider === 'Akahu' || tx.source === 'ASB sync') return 4;
+  if (tx.source === 'bill' || tx.source === 'income schedule') return 3;
+  if (tx.source === 'CSV import') return 2;
+  return 1;
+}
+
+function occurrenceCandidatesForBankTransaction(tx) {
+  const date = tx.date;
+  const candidates = [];
+  for (const bill of state.bills.filter(item => item.active !== false)) {
+    for (const occurrenceDate of occurrencesBetween(bill, isoDate(addDays(date, -5)), isoDate(addDays(date, 5)))) {
+      const expected = amountForOccurrence(bill, occurrenceDate);
+      if (Math.abs(expected - number(tx.amount)) > 0.02) continue;
+      const bankText = normalisedBankText(`${tx.bankDescription || ''} ${tx.description || ''}`);
+      const billWords = normalisedBankText(bill.name).split(' ').filter(word => word.length >= 3);
+      const nameMatch = billWords.some(word => bankText.includes(word));
+      candidates.push({ bill, occurrenceDate, nameMatch, distance: Math.abs(daysBetween(date, occurrenceDate)) });
+    }
+  }
+  const named = candidates.filter(item => item.nameMatch);
+  const pool = named.length ? named : candidates;
+  pool.sort((a, b) => a.distance - b.distance);
+  if (pool.length === 1) return pool[0];
+  if (pool.length > 1 && pool[0].distance < pool[1].distance) return pool[0];
+  return null;
+}
+
+async function reconcileBankTransactions() {
+  if (!confirm('Reclassify internal transfers and remove exact duplicate bill records? A local safety snapshot will be created first.')) return;
+  await storage.addSnapshot(structuredClone(state), 'Before transaction reconciliation').catch(() => null);
+
+  let transfersChanged = 0;
+  let matched = 0;
+  let removed = 0;
+
+  for (const tx of state.transactions) {
+    if (isInternalTransferDescription(`${tx.bankDescription || ''} ${tx.description || ''}`) && tx.type !== 'transfer') {
+      tx.type = 'transfer';
+      tx.category = 'Transfer';
+      tx.matchedBillId = '';
+      tx.matchedOccurrenceKey = '';
+      transfersChanged++;
+    }
+  }
+
+  for (const tx of state.transactions.filter(item =>
+    (item.bankProvider === 'Akahu' || item.source === 'ASB sync') &&
+    item.type === 'expense' &&
+    !item.matchedOccurrenceKey
+  )) {
+    const candidate = occurrenceCandidatesForBankTransaction(tx);
+    if (!candidate) continue;
+    tx.matchedBillId = candidate.bill.id;
+    tx.matchedOccurrenceKey = occurrenceKey(candidate.bill.id, candidate.occurrenceDate);
+    tx.category = candidate.bill.category || tx.category;
+    tx.description = candidate.bill.name;
+    matched++;
+  }
+
+  const groups = new Map();
+  for (const tx of state.transactions) {
+    if (!tx.matchedOccurrenceKey) continue;
+    if (!groups.has(tx.matchedOccurrenceKey)) groups.set(tx.matchedOccurrenceKey, []);
+    groups.get(tx.matchedOccurrenceKey).push(tx);
+  }
+
+  const removeIds = new Set();
+  for (const items of groups.values()) {
+    if (items.length < 2) continue;
+    items.sort((a, b) => transactionPriority(b) - transactionPriority(a));
+    for (const duplicate of items.slice(1)) removeIds.add(duplicate.id);
+  }
+  if (removeIds.size) {
+    state.transactions = state.transactions.filter(tx => !removeIds.has(tx.id));
+    removed = removeIds.size;
+  }
+
+  await commit(`Reconciled bank transactions: ${transfersChanged} transfers, ${matched} bill matches, ${removed} duplicates removed`, true);
+  render();
+  toast(`Reconciliation complete: ${transfersChanged} transfer(s), ${matched} bill match(es), ${removed} duplicate(s) removed.`, 'success');
+}
+
 async function loadBankAccounts() {
   if (!session || localOnly) return toast('Sign in with Microsoft before loading ASB accounts.', 'error');
   updateSyncBadge('pending', 'Loading ASB accounts…');
@@ -871,7 +972,7 @@ async function runBankSync() {
     updateSyncBadge('synced', 'Cloud synced');
     render();
     const summary = result.summary || {};
-    toast(`ASB sync complete: ${number(summary.added)} added, ${number(summary.updated)} updated, ${number(summary.review)} to review.`, 'success');
+    toast(`ASB sync complete: ${number(summary.added)} added, ${number(summary.updated)} updated, ${number(summary.transfers)} transfer(s), ${number(summary.duplicatesRemoved)} duplicate(s) removed, ${number(summary.review)} to review.`, 'success');
   } catch (error) {
     updateSyncBadge('error', 'ASB sync error');
     toast(error.message, 'error');
