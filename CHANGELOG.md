@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.3.1
+- Kept **Load supplied history** visible even when one or more rates invoices already exist.
+- Re-importing remains safe: invoice dates already stored are skipped rather than duplicated.
+- Bumped the service-worker cache so the corrected Rates screen is retrieved after deployment.
+
 ## 3.3
 - Added a dedicated Rates section.
 - Added quarterly rates invoice records and current amount-owing calculation.

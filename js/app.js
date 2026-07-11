@@ -1,4 +1,4 @@
-// Fortnight Finance v3.3 application module. This file belongs in /js/app.js only.
+// Fortnight Finance v3.3.1 application module. This file belongs in /js/app.js only.
 import { storage } from './storage.js';
 import {
   cloudConfigured, getSession, signIn, signUp, signInMicrosoft, signOut,
@@ -865,7 +865,7 @@ function renderRates() {
       </div>
     </div>
 
-    <div class="section-header"><div><h2>Quarterly invoices</h2><div class="muted small">Use amount 0 for a future invoice date when the amount is not known yet.</div></div><div class="button-row">${summary.invoices.length ? '' : '<button class="secondary-button" data-action="rates-load-supplied-history">Load supplied history</button>'}<button class="primary-button" data-action="rates-add-invoice">+ Add invoice</button></div></div>
+    <div class="section-header"><div><h2>Quarterly invoices</h2><div class="muted small">Use amount 0 for a future invoice date when the amount is not known yet. Loading the supplied history is safe to repeat because existing invoice dates are skipped.</div></div><div class="button-row"><button class="secondary-button" data-action="rates-load-supplied-history">Load supplied history</button><button class="primary-button" data-action="rates-add-invoice">+ Add invoice</button></div></div>
     <div class="table-wrap"><table><thead><tr><th>Invoice date</th><th>Amount</th><th>Reference</th><th>Status</th><th>Actions</th></tr></thead><tbody>
       ${summary.invoices.length ? summary.invoices.map(invoice => `<tr><td>${formatDate(invoice.date)}</td><td>${number(invoice.amount) > 0 ? money(invoice.amount) : '—'}</td><td>${escapeHtml(invoice.reference || invoice.notes || '')}</td><td><span class="status ${number(invoice.amount) > 0 ? 'paid' : 'upcoming'}">${number(invoice.amount) > 0 ? 'Confirmed' : 'Awaiting amount'}</span></td><td class="actions"><button class="secondary-button" data-action="rates-edit-invoice" data-id="${invoice.id}">Edit</button><button class="text-button negative" data-action="rates-delete-invoice" data-id="${invoice.id}">Delete</button></td></tr>`).join('') : '<tr><td colspan="5"><div class="empty-state"><strong>No rates invoices entered</strong>Add each quarterly invoice from the council statement.</div></td></tr>'}
     </tbody></table></div>
