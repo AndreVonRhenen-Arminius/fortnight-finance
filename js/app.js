@@ -1,4 +1,4 @@
-// Fortnight Finance v3.2.1 application module. This file belongs in /js/app.js only.
+// Fortnight Finance v3.3 application module. This file belongs in /js/app.js only.
 import { storage } from './storage.js';
 import {
   cloudConfigured, getSession, signIn, signUp, signInMicrosoft, signOut,
@@ -10,7 +10,7 @@ import {
   automaticFolderBackup, disconnectFolder
 } from './backup.js';
 import {
-  uid, todayISO, isoDate, toDate, addDays, daysBetween, fortnightContaining,
+  uid, todayISO, isoDate, toDate, addDays, addMonthsClamped, daysBetween, fortnightContaining,
   occurrencesBetween, nextOccurrence, money, formatDate, formatShortDate,
   frequencyLabel, number, escapeHtml, csvParse, parseMoney, parseDateFlexible,
   fingerprintTransaction
@@ -38,6 +38,7 @@ const titles = {
   income: ['Income', 'Regular and one-off income schedules'],
   transactions: ['Transactions', 'Actual money in and money out'],
   planning: ['Planning', 'Spending limits, sinking funds and debts'],
+  rates: ['Rates', 'Quarterly invoices, fortnightly payments and amount owing'],
   bank: ['ASB Sync', 'Read-only bank transaction updates through Akahu'],
   backup: ['Backup & Sync', 'Cloud status, exports and recovery'],
   settings: ['Settings', 'Accounts, fortnight dates and matching rules']
@@ -60,7 +61,7 @@ function formatDateTime(value) {
 function defaultState() {
   const today = todayISO();
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     settings: {
@@ -95,6 +96,15 @@ function defaultState() {
       { id: uid('fund'), name: 'Christmas / birthdays', target: 0, balance: 0, contribution: 0, active: true }
     ],
     debts: [],
+    rates: {
+      councilName: 'Council rates',
+      linkedBillId: '',
+      bankMatchPattern: '',
+      managedRuleId: '',
+      estimatedQuarterlyAmount: 0,
+      nextInvoiceDate: '',
+      invoices: []
+    },
     transactions: [],
     rules: [],
     bankSync: {
@@ -121,6 +131,7 @@ function migrate(input) {
     ...base,
     ...input,
     settings: { ...base.settings, ...(input.settings || {}) },
+    rates: { ...base.rates, ...(input.rates || {}) },
     bankSync: { ...base.bankSync, ...(input.bankSync || {}) }
   };
   for (const key of ['accounts', 'bills', 'incomes', 'budgets', 'sinkingFunds', 'debts', 'transactions', 'rules', 'audit']) {
@@ -129,7 +140,18 @@ function migrate(input) {
   for (const key of ['availableAccounts', 'accountMappings', 'loanMappings', 'reviewItems', 'syncHistory']) {
     merged.bankSync[key] = Array.isArray(input.bankSync?.[key]) ? input.bankSync[key] : base.bankSync[key];
   }
-  merged.schemaVersion = 4;
+  merged.rates.invoices = Array.isArray(input.rates?.invoices) ? input.rates.invoices : base.rates.invoices;
+  if (!merged.rates.linkedBillId) {
+    const likelyRatesBills = merged.bills.filter(bill => /\bRATES?\b/i.test(`${bill.name || ''} ${bill.category || ''}`));
+    if (likelyRatesBills.length === 1) merged.rates.linkedBillId = likelyRatesBills[0].id;
+  }
+  if (!number(merged.rates.estimatedQuarterlyAmount)) {
+    const latestInvoice = merged.rates.invoices
+      .filter(invoice => number(invoice.amount) > 0)
+      .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0];
+    if (latestInvoice) merged.rates.estimatedQuarterlyAmount = number(latestInvoice.amount);
+  }
+  merged.schemaVersion = 5;
   return merged;
 }
 
@@ -315,7 +337,7 @@ function render() {
   const [title, subtitle] = selectedTitle;
   $('#pageTitle').textContent = title;
   $('#pageSubtitle').textContent = subtitle;
-  const renderers = { dashboard: renderDashboard, bills: renderBills, income: renderIncome, transactions: renderTransactions, planning: renderPlanning, bank: renderBankSync, backup: renderBackup, settings: renderSettings };
+  const renderers = { dashboard: renderDashboard, bills: renderBills, income: renderIncome, transactions: renderTransactions, planning: renderPlanning, rates: renderRates, bank: renderBankSync, backup: renderBackup, settings: renderSettings };
   const renderer = renderers[currentView] || renderDashboard;
   try {
     $('#content').innerHTML = renderer();
@@ -360,6 +382,12 @@ function bindViewEvents() {
       'delete-fund': () => deleteEntity('sinkingFunds', id, 'sinking fund'),
       'add-debt': () => openDebtForm(),
       'add-credit-card': () => openDebtForm('', 'credit-card'),
+      'rates-add-invoice': () => openRatesInvoiceForm(),
+      'rates-load-supplied-history': () => loadSuppliedRatesHistory(),
+      'rates-edit-invoice': () => openRatesInvoiceForm(id),
+      'rates-delete-invoice': () => deleteRatesInvoice(id),
+      'rates-add-payment': () => openRatesPaymentForm(),
+      'rates-exclude-payment': () => excludeRatesPayment(id),
       'bank-load-accounts': () => loadBankAccounts(),
       'bank-sync-now': () => runBankSync(),
       'bank-clean-duplicates': () => reconcileBankTransactions(),
@@ -398,6 +426,8 @@ function bindViewEvents() {
   if (bankMappingsForm) bankMappingsForm.addEventListener('submit', saveBankMappings);
   const bankOptionsForm = $('#bankOptionsForm');
   if (bankOptionsForm) bankOptionsForm.addEventListener('submit', saveBankOptions);
+  const ratesSettingsForm = $('#ratesSettingsForm');
+  if (ratesSettingsForm) ratesSettingsForm.addEventListener('submit', saveRatesSettings);
 }
 
 
@@ -729,6 +759,135 @@ function renderPlanning() {
   <div class="notice" style="margin-top:14px"><strong>Balance handling:</strong> mortgage and personal-loan balances are never reduced by the full repayment because repayments include interest. Afterpay and credit-card records show a projected balance after a recorded payment, while retaining the confirmed balance separately. New purchases, fees and refunds are not included until the balance is refreshed or edited.</div>`;
 }
 
+
+function configuredRatesBill() {
+  const configured = state.bills.find(bill => bill.id === state.rates?.linkedBillId);
+  if (configured) return configured;
+  const likely = state.bills.filter(bill => /\bRATES?\b/i.test(`${bill.name || ''} ${bill.category || ''}`));
+  return likely.length === 1 ? likely[0] : null;
+}
+
+function ratesInvoices() {
+  return [...(state.rates?.invoices || [])]
+    .filter(invoice => invoice?.date)
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+function isRatesPayment(tx) {
+  if (!tx || tx.type !== 'expense' || tx.ratesExcluded) return false;
+  if (tx.ratesPayment) return true;
+  const bill = configuredRatesBill();
+  if (bill && (tx.matchedBillId === bill.id || String(tx.matchedOccurrenceKey || '').startsWith(`${bill.id}:`))) return true;
+  if (/^RATES?$/i.test(String(tx.category || '').trim())) return true;
+  const pattern = normalisedBankText(state.rates?.bankMatchPattern || '');
+  const bankText = normalisedBankText(`${tx.bankDescription || ''} ${tx.description || ''} ${tx.merchant || ''}`);
+  return Boolean(pattern && bankText.includes(pattern));
+}
+
+function ratesPayments() {
+  return state.transactions
+    .filter(isRatesPayment)
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+}
+
+function ratesSummary() {
+  const invoices = ratesInvoices();
+  const payments = ratesPayments();
+  const invoiced = invoices.reduce((sum, invoice) => sum + number(invoice.amount), 0);
+  const paid = payments.reduce((sum, tx) => sum + number(tx.amount), 0);
+  return {
+    invoices,
+    payments,
+    invoiced,
+    paid,
+    owing: Math.max(0, invoiced - paid),
+    credit: Math.max(0, paid - invoiced)
+  };
+}
+
+function nextRatesInvoice() {
+  const invoices = ratesInvoices();
+  const futurePlaceholder = invoices
+    .filter(invoice => invoice.date >= todayISO() && number(invoice.amount) <= 0)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))[0];
+  if (futurePlaceholder) return { date: futurePlaceholder.date, amount: 0, source: 'Scheduled placeholder' };
+  if (state.rates?.nextInvoiceDate) {
+    return { date: state.rates.nextInvoiceDate, amount: number(state.rates.estimatedQuarterlyAmount), source: 'Configured estimate' };
+  }
+  const latest = invoices[0];
+  if (!latest?.date) return { date: '', amount: number(state.rates?.estimatedQuarterlyAmount), source: 'Not scheduled' };
+  return {
+    date: isoDate(addMonthsClamped(latest.date, 3, toDate(latest.date).getDate())),
+    amount: number(state.rates?.estimatedQuarterlyAmount || latest.amount),
+    source: 'Quarterly estimate'
+  };
+}
+
+function nextRatesPayment() {
+  const bill = configuredRatesBill();
+  if (!bill) return { bill: null, date: '', amount: 0, paid: false };
+  const from = todayISO();
+  const to = isoDate(addDays(from, 120));
+  const occurrences = occurrencesBetween(bill, from, to).map(date => ({
+    date,
+    amount: amountForOccurrence(bill, date),
+    paid: isOccurrenceRecorded(bill.id, date)
+  }));
+  return { bill, ...(occurrences.find(item => !item.paid) || occurrences[0] || { date: nextDueDate(bill), amount: number(bill.amount), paid: false }) };
+}
+
+function renderRates() {
+  const summary = ratesSummary();
+  const bill = configuredRatesBill();
+  const nextInvoice = nextRatesInvoice();
+  const nextPayment = nextRatesPayment();
+  const projectedOwing = Math.max(0, summary.owing - (nextPayment.paid ? 0 : number(nextPayment.amount)));
+  const councilName = state.rates?.councilName || 'Council rates';
+
+  return `<div class="notice"><strong>How this section works:</strong> quarterly invoices increase the amount owing. Fortnightly payments reduce it. Only the linked payment bill counts in the fortnightly cash-flow plan, so the quarterly invoice is not counted a second time as cash spending.</div>
+    <div class="grid cards" style="margin-top:18px">
+      ${metricCard('Current rates owing', money(summary.owing), summary.credit ? `${money(summary.credit)} paid ahead` : `${summary.invoices.filter(item => number(item.amount) > 0).length} confirmed invoice(s)`, summary.owing > 0 ? 'warn' : 'good')}
+      ${metricCard('Total invoiced', money(summary.invoiced), `Quarterly invoices for ${escapeHtml(councilName)}`)}
+      ${metricCard('Total paid', money(summary.paid), `${summary.payments.length} payment(s) found`, 'good')}
+      ${metricCard('After next payment', money(projectedOwing), nextPayment.date ? `${money(nextPayment.amount)} due ${formatDate(nextPayment.date)}` : 'No linked payment bill', nextPayment.date ? 'good' : 'warn')}
+    </div>
+
+    <div class="grid two" style="margin-top:18px">
+      <div class="card">
+        <h2>Next quarterly invoice</h2>
+        <div class="metric-value">${nextInvoice.date ? formatDate(nextInvoice.date) : 'Not scheduled'}</div>
+        <div class="metric-note">${nextInvoice.amount > 0 ? `Estimated ${money(nextInvoice.amount)}` : 'Amount not entered yet'} · ${escapeHtml(nextInvoice.source)}</div>
+        <div class="notice warning" style="margin-top:14px">The estimate is for planning only. Add or edit the invoice when the council statement arrives.</div>
+      </div>
+      <div class="card">
+        <h2>Linked fortnightly payment</h2>
+        ${bill ? `<div class="metric-value">${money(nextPayment.amount || bill.amount)}</div><div class="metric-note">${escapeHtml(bill.name)} · ${nextPayment.date ? `next due ${formatDate(nextPayment.date)}` : frequencyLabel(bill.frequency)}</div>` : '<div class="empty-state"><strong>No bill linked</strong>Select the existing Rates bill below so ASB payments can mark it paid automatically.</div>'}
+      </div>
+    </div>
+
+    <div class="section-header"><div><h2>Quarterly invoices</h2><div class="muted small">Use amount 0 for a future invoice date when the amount is not known yet.</div></div><div class="button-row">${summary.invoices.length ? '' : '<button class="secondary-button" data-action="rates-load-supplied-history">Load supplied history</button>'}<button class="primary-button" data-action="rates-add-invoice">+ Add invoice</button></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Invoice date</th><th>Amount</th><th>Reference</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${summary.invoices.length ? summary.invoices.map(invoice => `<tr><td>${formatDate(invoice.date)}</td><td>${number(invoice.amount) > 0 ? money(invoice.amount) : '—'}</td><td>${escapeHtml(invoice.reference || invoice.notes || '')}</td><td><span class="status ${number(invoice.amount) > 0 ? 'paid' : 'upcoming'}">${number(invoice.amount) > 0 ? 'Confirmed' : 'Awaiting amount'}</span></td><td class="actions"><button class="secondary-button" data-action="rates-edit-invoice" data-id="${invoice.id}">Edit</button><button class="text-button negative" data-action="rates-delete-invoice" data-id="${invoice.id}">Delete</button></td></tr>`).join('') : '<tr><td colspan="5"><div class="empty-state"><strong>No rates invoices entered</strong>Add each quarterly invoice from the council statement.</div></td></tr>'}
+    </tbody></table></div>
+
+    <div class="section-header"><div><h2>Rates payments</h2><div class="muted small">ASB-synchronised transactions appear automatically when they match the linked bill, category or bank-description rule.</div></div><button class="secondary-button" data-action="rates-add-payment">+ Add manual payment</button></div>
+    <div class="table-wrap"><table><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Source</th><th>Bill match</th><th>Actions</th></tr></thead><tbody>
+      ${summary.payments.length ? summary.payments.map(tx => `<tr><td>${formatDate(tx.date)}</td><td><strong>${escapeHtml(tx.description || tx.merchant || 'Rates payment')}</strong><div class="muted small">${escapeHtml(tx.bankDescription || '')}</div></td><td>${money(tx.amount)}</td><td>${escapeHtml(tx.source || 'manual')}</td><td>${tx.matchedOccurrenceKey ? '<span class="status paid">Matched</span>' : '<span class="status upcoming">Rates only</span>'}</td><td class="actions"><button class="secondary-button" data-action="edit-transaction" data-id="${tx.id}">Edit</button><button class="text-button negative" data-action="rates-exclude-payment" data-id="${tx.id}">Exclude</button></td></tr>`).join('') : '<tr><td colspan="6"><div class="empty-state"><strong>No rates payments found</strong>Link the Rates bill and add a bank-description phrase, then run ASB Sync.</div></td></tr>'}
+    </tbody></table></div>
+
+    <form id="ratesSettingsForm" class="card" style="margin-top:26px">
+      <h2>Rates setup and automatic matching</h2>
+      <div class="form-grid">
+        <label>Council or rates name<input name="councilName" value="${escapeHtml(councilName)}" required></label>
+        <label>Linked fortnightly bill<select name="linkedBillId"><option value="">Not linked</option>${state.bills.map(item => `<option value="${item.id}" ${item.id === bill?.id ? 'selected' : ''}>${escapeHtml(item.name)} · ${money(item.amount)} · ${frequencyLabel(item.frequency)}</option>`).join('')}</select><span class="help">This existing bill remains the cash expense shown on Dashboard.</span></label>
+        <label>ASB description contains<input name="bankMatchPattern" value="${escapeHtml(state.rates?.bankMatchPattern || '')}" placeholder="e.g. CHRISTCHURCH CITY COUNCIL"><span class="help">Enter a reliable phrase exactly as it appears in ASB. A managed statement rule is created automatically.</span></label>
+        <label>Estimated quarterly invoice<input name="estimatedQuarterlyAmount" type="number" min="0" step="0.01" value="${number(state.rates?.estimatedQuarterlyAmount)}"><span class="help">Used only for the next-invoice estimate.</span></label>
+        <label>Next invoice date override<input name="nextInvoiceDate" type="date" value="${state.rates?.nextInvoiceDate || ''}"><span class="help">Leave blank to calculate three months after the latest invoice.</span></label>
+      </div>
+      <div class="button-row end"><button class="primary-button">Save rates setup</button></div>
+    </form>`;
+}
+
 function renderBankSync() {
   const bank = state.bankSync || {};
   const available = Array.isArray(bank.availableAccounts) ? bank.availableAccounts : [];
@@ -859,7 +1018,7 @@ function billOptions(selected = '') {
 function categoryList() {
   return [...new Set([
     ...state.bills.map(x => x.category), ...state.budgets.map(x => x.category), ...state.rules.map(x => x.category),
-    'Uncategorised', 'Transfer', 'Debt payment', 'Savings transfer'
+    'Rates', 'Uncategorised', 'Transfer', 'Debt payment', 'Savings transfer'
   ].filter(Boolean))].sort();
 }
 function categoryOptions(selected = '') { return categoryList().map(c => `<option ${c === selected ? 'selected' : ''}>${escapeHtml(c)}</option>`).join(''); }
@@ -979,6 +1138,171 @@ function openDebtForm(id = '', preferredType = '') {
     closeModal();
   };
 }
+
+
+async function loadSuppliedRatesHistory() {
+  if (!confirm('Add the quarterly invoice dates and amounts from the supplied rates spreadsheet? Existing invoice dates will not be replaced.')) return;
+  const supplied = [
+    { date: '2025-09-15', amount: 609.49, reference: 'Quarterly rates invoice' },
+    { date: '2025-12-15', amount: 609.49, reference: 'Quarterly rates invoice' },
+    { date: '2026-03-15', amount: 670.45, reference: 'Quarterly rates invoice' },
+    { date: '2026-06-15', amount: 670.70, reference: 'Quarterly rates invoice' },
+    { date: '2026-09-15', amount: 0, reference: 'Future invoice — amount pending' },
+    { date: '2026-12-15', amount: 0, reference: 'Future invoice — amount pending' }
+  ];
+  const existingDates = new Set((state.rates.invoices || []).map(invoice => invoice.date));
+  let added = 0;
+  for (const item of supplied) {
+    if (existingDates.has(item.date)) continue;
+    state.rates.invoices.push({ id: uid('ratesinv'), ...item, notes: '', updatedAt: new Date().toISOString() });
+    added++;
+  }
+  state.rates.estimatedQuarterlyAmount = number(state.rates.estimatedQuarterlyAmount) || 670.70;
+  await commit(`Loaded ${added} supplied rates invoice record(s)`, true);
+  toast(added ? `${added} invoice record(s) added.` : 'All supplied invoice dates already exist.', added ? 'success' : 'info');
+  render();
+}
+
+function openRatesInvoiceForm(id = '') {
+  const item = (state.rates?.invoices || []).find(invoice => invoice.id === id) || { date: todayISO(), amount: 0, reference: '', notes: '' };
+  openModal(id ? 'Edit rates invoice' : 'Add rates invoice', `<form id="ratesInvoiceForm"><div class="form-grid">
+    <label>Invoice date<input name="date" type="date" value="${item.date || todayISO()}" required></label>
+    <label>Invoice amount<input name="amount" type="number" min="0" step="0.01" value="${number(item.amount)}"><span class="help">Use 0 for a future date when the amount is not yet known.</span></label>
+    <label class="full">Invoice reference<input name="reference" value="${escapeHtml(item.reference || '')}" placeholder="Optional council invoice reference"></label>
+    <label class="full">Notes<textarea name="notes">${escapeHtml(item.notes || '')}</textarea></label>
+  </div><div class="button-row end"><button type="button" class="secondary-button" id="cancelForm">Cancel</button><button class="primary-button">Save invoice</button></div></form>`);
+  $('#cancelForm').onclick = closeModal;
+  $('#ratesInvoiceForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const invoice = {
+      ...item,
+      id: item.id || uid('ratesinv'),
+      date: form.get('date'),
+      amount: number(form.get('amount')),
+      reference: String(form.get('reference') || '').trim(),
+      notes: String(form.get('notes') || '').trim(),
+      updatedAt: new Date().toISOString()
+    };
+    const index = state.rates.invoices.findIndex(entry => entry.id === invoice.id);
+    if (index >= 0) state.rates.invoices[index] = invoice; else state.rates.invoices.push(invoice);
+    if (invoice.amount > 0) state.rates.estimatedQuarterlyAmount = invoice.amount;
+    await commit(id ? 'Updated rates invoice' : 'Added rates invoice', true);
+    closeModal();
+    render();
+  };
+}
+
+async function deleteRatesInvoice(id) {
+  if (!confirm('Delete this rates invoice?')) return;
+  state.rates.invoices = (state.rates.invoices || []).filter(invoice => invoice.id !== id);
+  await commit('Deleted rates invoice', true);
+  render();
+}
+
+function nearestRatesBillOccurrence(date, amount) {
+  const bill = configuredRatesBill();
+  if (!bill) return null;
+  const candidates = occurrencesBetween(bill, isoDate(addDays(date, -5)), isoDate(addDays(date, 5)))
+    .map(occurrenceDate => ({
+      occurrenceDate,
+      distance: Math.abs(daysBetween(date, occurrenceDate)),
+      amount: amountForOccurrence(bill, occurrenceDate),
+      occupied: isOccurrenceRecorded(bill.id, occurrenceDate)
+    }))
+    .filter(item => !item.occupied && Math.abs(item.amount - number(amount)) <= 0.02)
+    .sort((a, b) => a.distance - b.distance);
+  return candidates[0] || null;
+}
+
+function openRatesPaymentForm() {
+  const bill = configuredRatesBill();
+  const defaults = nextRatesPayment();
+  openModal('Add manual rates payment', `<form id="ratesPaymentForm"><div class="form-grid">
+    <label>Payment date<input name="date" type="date" value="${defaults.date || todayISO()}" required></label>
+    <label>Amount<input name="amount" type="number" min="0.01" step="0.01" value="${number(defaults.amount || bill?.amount)}" required></label>
+    <label>Paid from<select name="accountId"><option value="">Select account</option>${accountOptions(bill?.accountId || '')}</select></label>
+    <label>Description<input name="description" value="${escapeHtml(state.rates?.councilName || bill?.name || 'Rates')}" required></label>
+    <label class="full">Notes<textarea name="notes"></textarea></label>
+  </div><div class="notice">Use this only when the payment is not already present through ASB Sync, to avoid duplicates.</div><div class="button-row end"><button type="button" class="secondary-button" id="cancelForm">Cancel</button><button class="primary-button">Add payment</button></div></form>`);
+  $('#cancelForm').onclick = closeModal;
+  $('#ratesPaymentForm').onsubmit = async event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const date = form.get('date');
+    const amount = number(form.get('amount'));
+    const candidate = nearestRatesBillOccurrence(date, amount);
+    const tx = {
+      id: uid('tx'),
+      date,
+      type: 'expense',
+      description: String(form.get('description') || 'Rates').trim(),
+      amount,
+      category: 'Rates',
+      accountId: form.get('accountId'),
+      source: 'Rates manual',
+      ratesPayment: true,
+      notes: String(form.get('notes') || '').trim(),
+      matchedBillId: candidate && bill ? bill.id : '',
+      matchedOccurrenceKey: candidate && bill ? occurrenceKey(bill.id, candidate.occurrenceDate) : ''
+    };
+    tx.fingerprint = fingerprintTransaction(tx);
+    const duplicate = state.transactions.some(existing => (existing.fingerprint || fingerprintTransaction(existing)) === tx.fingerprint);
+    if (duplicate) return toast('That payment already appears to exist.', 'error');
+    state.transactions.push(tx);
+    await commit('Added manual rates payment', true);
+    closeModal();
+    render();
+  };
+}
+
+async function excludeRatesPayment(id) {
+  const tx = state.transactions.find(item => item.id === id);
+  if (!tx) return;
+  if (!confirm('Exclude this transaction from the Rates totals? The transaction itself will remain in the app.')) return;
+  tx.ratesExcluded = true;
+  tx.ratesPayment = false;
+  await commit('Excluded transaction from rates tracking', true);
+  render();
+}
+
+async function saveRatesSettings(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const linkedBillId = String(form.get('linkedBillId') || '');
+  const pattern = String(form.get('bankMatchPattern') || '').trim();
+  state.rates.councilName = String(form.get('councilName') || '').trim() || 'Council rates';
+  state.rates.linkedBillId = linkedBillId;
+  state.rates.bankMatchPattern = pattern;
+  state.rates.estimatedQuarterlyAmount = number(form.get('estimatedQuarterlyAmount'));
+  state.rates.nextInvoiceDate = String(form.get('nextInvoiceDate') || '');
+
+  let managedRule = state.rules.find(rule => rule.id === state.rates.managedRuleId || rule.managedBy === 'rates');
+  if (pattern) {
+    const updatedRule = {
+      ...(managedRule || {}),
+      id: managedRule?.id || uid('rule'),
+      managedBy: 'rates',
+      pattern,
+      merchant: state.rates.councilName,
+      category: 'Rates',
+      type: 'expense',
+      scheduleKind: linkedBillId ? 'bill' : '',
+      scheduleId: linkedBillId
+    };
+    const index = state.rules.findIndex(rule => rule.id === updatedRule.id);
+    if (index >= 0) state.rules[index] = updatedRule; else state.rules.push(updatedRule);
+    state.rates.managedRuleId = updatedRule.id;
+  } else if (managedRule) {
+    state.rules = state.rules.filter(rule => rule.id !== managedRule.id);
+    state.rates.managedRuleId = '';
+  }
+
+  await commit('Updated rates setup', true);
+  toast('Rates setup saved.', 'success');
+  render();
+}
+
 function openAccountForm(id='') {
   const item=state.accounts.find(x=>x.id===id)||{type:'everyday',active:true};
   openModal(id?'Edit account':'Add account',`<form id="simpleForm"><label>Account nickname<input name="name" value="${escapeHtml(item.name||'')}" required></label><label>Type<select name="type">${['everyday','bills','savings','credit','cash','other'].map(v=>`<option ${item.type===v?'selected':''}>${v}</option>`).join('')}</select></label><label class="checkbox-row"><input name="active" type="checkbox" ${item.active!==false?'checked':''}> Active</label><div class="button-row end"><button class="primary-button">Save</button></div></form>`);

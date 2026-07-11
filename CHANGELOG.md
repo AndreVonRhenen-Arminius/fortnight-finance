@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.3
+- Added a dedicated Rates section.
+- Added quarterly rates invoice records and current amount-owing calculation.
+- Added automatic recognition of ASB-synchronised rates payments through the linked Rates bill, category or managed bank-description rule.
+- Added manual rates payments, future invoice placeholders, next-invoice estimates and a one-click import for the supplied invoice history.
+- Kept the quarterly invoice outside fortnightly cash-flow totals to prevent double-counting; the linked fortnightly Rates bill remains the planned cash expense.
+- Migrated existing Version 3.2 data without replacing accounts, bills, transactions, authentication settings or secrets.
+
 ## 3.2.1
 - Fixed ASB Sync failing to render when linked bank accounts or sync timestamps exist.
 - Fixed Settings failing to render when statement-matching rules exist.

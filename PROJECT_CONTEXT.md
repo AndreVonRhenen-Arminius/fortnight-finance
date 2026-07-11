@@ -2,7 +2,7 @@
 
 ## Current release
 
-Version 3.2.1, GitHub Pages PWA for fortnightly household finance management.
+Version 3.3, GitHub Pages PWA for fortnightly household finance management.
 
 ## Deployment
 
@@ -39,6 +39,11 @@ A debt record stores balance and account details. A linked bill controls payment
 - `LOAN REPAYMENT 020INTEREST` + `LOAN REPAYMENT 020PRINCIPAL` map to the mortgage bill.
 - `LOAN REPAYMENT 022INTEREST` + `LOAN REPAYMENT 022PRINCIPAL` map to the personal-loan bill.
 
+### Rates
+- Quarterly rates invoices increase the tracked amount owing.
+- Fortnightly rates payments reduce the amount owing and can be detected from ASB-synchronised transactions.
+- The linked Rates bill remains the only item counted in fortnightly cash-flow planning, preventing double-counting of the quarterly invoice.
+
 ### Afterpay and credit cards
 The app keeps a confirmed balance and displays a projected balance after a recorded payment. It does not permanently overwrite the confirmed balance because new purchases, fees and refunds may change it.
 
@@ -60,6 +65,7 @@ The app keeps a confirmed balance and displays a projected balance after a recor
 - Bulk setup CSV import
 - Spending limits, sinking funds and debts
 - Credit-card balance and available-credit display
+- Rates tracking with quarterly invoices, ASB-synchronised payments and amount owing
 - Dark/light theme
 - ASB/Akahu account mappings
 - Loan principal/interest grouping

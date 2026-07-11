@@ -1,4 +1,4 @@
-const CACHE = 'fortnight-finance-v8';
+const CACHE = 'fortnight-finance-v9';
 const ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/config.js', './js/app.js', './js/utils.js', './js/storage.js', './js/sync.js', './js/backup.js',

@@ -1,4 +1,4 @@
-# Fortnight Finance PWA — Version 3.2.1
+# Fortnight Finance PWA — Version 3.3
 
 A build-free household finance Progressive Web App designed for GitHub Pages.
 
@@ -8,6 +8,7 @@ A build-free household finance Progressive Web App designed for GitHub Pages.
 - Planned versus actual cash-flow dashboard
 - Transaction entry, CSV import and duplicate detection
 - Spending limits, sinking funds, debt and credit-card tracking
+- Rates invoice, payment and outstanding-balance tracking
 - Microsoft authentication and Supabase cloud synchronisation
 - Offline browser storage
 - Encrypted export, restore and OneDrive-folder backups
@@ -20,6 +21,7 @@ A build-free household finance Progressive Web App designed for GitHub Pages.
 - `SETUP_GUIDE.md` — initial deployment
 - `SECURITY.md` — security requirements
 - `HANDOFF.md` — continue the project in a new conversation
+- `RATES_SETUP.md` — configure quarterly rates invoices and ASB payment matching
 - `CHANGELOG.md` — version history
 
 ## Repository structure

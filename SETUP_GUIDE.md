@@ -315,7 +315,7 @@ window.FINANCE_CONFIG = {
 8. Wait for the GitHub Pages deployment to complete.
 9. Open the PWA address and refresh it.
 
-Version 3.2.1 uses a network-first service-worker strategy, so configuration changes should update normally. If an older installed copy remains stale, close all app windows, reopen the site in Edge, press `Ctrl+F5`, and then reopen the installed app.
+Version 3.3 uses a network-first service-worker strategy, so configuration changes should update normally. If an older installed copy remains stale, close all app windows, reopen the site in Edge, press `Ctrl+F5`, and then reopen the installed app.
 
 ---
 
