@@ -1,4 +1,4 @@
-# Fortnight Finance PWA — Version 3.3
+# Fortnight Finance PWA — Version 3.3.2
 
 A build-free household finance Progressive Web App designed for GitHub Pages.
 

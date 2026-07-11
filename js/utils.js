@@ -126,9 +126,28 @@ export function csvParse(text) {
 
 export function parseMoney(value) {
   if (value === null || value === undefined || value === '') return 0;
-  const clean = String(value).replace(/[$,\s]/g, '').replace(/^\((.*)\)$/, '-$1');
+
+  // Bank exports sometimes use typographic dash characters instead of the
+  // ASCII minus sign. Normalise those before removing currency formatting.
+  let clean = String(value)
+    .trim()
+    .replace(/\u00a0/g, ' ')
+    .replace(/[−–—‒‑﹣－]/g, '-');
+
+  const accountingNegative = /^\(.*\)$/.test(clean);
+  if (accountingNegative) clean = `-${clean.slice(1, -1)}`;
+
+  const suffix = clean.match(/\b(CR|DR)\s*$/i)?.[1]?.toUpperCase() || '';
+  clean = clean
+    .replace(/\b(?:NZD|NZ\$)\b/gi, '')
+    .replace(/\b(?:CR|DR)\s*$/i, '')
+    .replace(/[$,\s]/g, '');
+
   const n = Number(clean);
-  return Number.isFinite(n) ? n : 0;
+  if (!Number.isFinite(n)) return 0;
+  if (suffix === 'DR') return -Math.abs(n);
+  if (suffix === 'CR') return Math.abs(n);
+  return n;
 }
 
 export function parseDateFlexible(value) {

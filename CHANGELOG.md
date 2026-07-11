@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.3.2
+- Fixed ASB CSV withdrawals containing typographic minus characters such as an en dash (`–$94.00`) being parsed as `$0.00` and marked invalid.
+- Added support for common bank amount formats including Unicode minus signs, accounting brackets and `CR`/`DR` suffixes.
+- Added automatic detection of the real transaction header row when an ASB export contains report-information rows above the table.
+- Removed a leading UTF-8 BOM from detected CSV headings.
+- Bumped the service-worker cache so deployed browsers retrieve the corrected importer.
+
 ## 3.3.1
 - Kept **Load supplied history** visible even when one or more rates invoices already exist.
 - Re-importing remains safe: invoice dates already stored are skipped rather than duplicated.

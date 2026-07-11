@@ -1,4 +1,4 @@
-// Fortnight Finance v3.3.1 application module. This file belongs in /js/app.js only.
+// Fortnight Finance v3.3.2 application module. This file belongs in /js/app.js only.
 import { storage } from './storage.js';
 import {
   cloudConfigured, getSession, signIn, signUp, signInMicrosoft, signOut,
@@ -1777,13 +1777,30 @@ async function applySetupImport(plan) {
   toast(`Setup imported: ${results.added} added, ${results.updated} updated${results.skipped ? `, ${results.skipped} skipped` : ''}.`, results.skipped ? 'info' : 'success');
 }
 
+function findStatementHeaderIndex(rows) {
+  const limit = Math.min(rows.length, 30);
+  for (let i = 0; i < limit; i++) {
+    const headers = rows[i].map(value => String(value || '').replace(/^\uFEFF/, '').trim().toLowerCase());
+    const hasDate = headers.some(header => header.includes('date'));
+    const hasDescription = headers.some(header => ['description', 'details', 'particular', 'merchant', 'narrative', 'payee'].some(term => header.includes(term)));
+    const hasAmount = headers.some(header => ['amount', 'debit', 'withdrawal', 'money out', 'credit', 'deposit', 'money in'].some(term => header.includes(term)));
+    if (hasDate && hasDescription && hasAmount) return i;
+  }
+  return 0;
+}
 async function handleStatementFile(event) {
   const file=event.target.files[0];event.target.value='';if(!file)return;
-  try{const rows=csvParse(await file.text());if(rows.length<2)throw new Error('The CSV file does not contain transaction rows.');openMappingStep(rows);}catch(error){toast(error.message,'error');}
+  try{
+    const parsed=csvParse(await file.text());
+    const headerIndex=findStatementHeaderIndex(parsed);
+    const rows=parsed.slice(headerIndex);
+    if(rows.length<2)throw new Error('The CSV file does not contain transaction rows.');
+    openMappingStep(rows);
+  }catch(error){toast(error.message,'error');}
 }
 function inferHeader(headers,patterns){const lower=headers.map(h=>h.toLowerCase());return lower.findIndex(h=>patterns.some(p=>h.includes(p)));}
 function openMappingStep(rows) {
-  const headers=rows[0].map(x=>x.trim());const options=(selected)=>headers.map((h,i)=>`<option value="${i}" ${i===selected?'selected':''}>${escapeHtml(h||`Column ${i+1}`)}</option>`).join('');
+  const headers=rows[0].map(x=>String(x||'').replace(/^\uFEFF/,'').trim());const options=(selected)=>headers.map((h,i)=>`<option value="${i}" ${i===selected?'selected':''}>${escapeHtml(h||`Column ${i+1}`)}</option>`).join('');
   const dateIdx=inferHeader(headers,['date']);const descIdx=inferHeader(headers,['description','details','particular','merchant','narrative']);const amountIdx=inferHeader(headers,['amount']);const debitIdx=inferHeader(headers,['debit','withdrawal','money out']);const creditIdx=inferHeader(headers,['credit','deposit','money in']);
   openModal('Map bank statement columns',`<form id="mappingForm"><div class="import-grid"><label>Date<select name="date"><option value="">Not mapped</option>${options(dateIdx)}</select></label><label>Description<select name="description"><option value="">Not mapped</option>${options(descIdx)}</select></label><label>Single amount<select name="amount"><option value="">Not used</option>${options(amountIdx)}</select></label><label>Money out / debit<select name="debit"><option value="">Not used</option>${options(debitIdx)}</select></label><label>Money in / credit<select name="credit"><option value="">Not used</option>${options(creditIdx)}</select></label></div><div class="form-grid" style="margin-top:14px"><label>Account<select name="accountId"><option value="">Select account</option>${accountOptions('')}</select></label><label>Single amount convention<select name="amountDirection"><option value="negative-out">Negative = money out</option><option value="positive-out">Positive = money out</option></select></label></div><div class="notice" style="margin-top:12px">Use either a single Amount column, or separate Money out and Money in columns.</div><div class="button-row end"><button class="primary-button">Preview import</button></div></form>` ,{wide:true});
   const form=$('#mappingForm');for(const name of ['date','description','amount','debit','credit']){const sel=form.elements[name];if(Number.isInteger({date:dateIdx,description:descIdx,amount:amountIdx,debit:debitIdx,credit:creditIdx}[name])&&{date:dateIdx,description:descIdx,amount:amountIdx,debit:debitIdx,credit:creditIdx}[name]>=0)sel.value=String({date:dateIdx,description:descIdx,amount:amountIdx,debit:debitIdx,credit:creditIdx}[name]);}

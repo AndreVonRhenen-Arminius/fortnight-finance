@@ -1,4 +1,4 @@
-# Rates setup — Version 3.3.1
+# Rates setup — Version 3.3.2
 
 The Rates section tracks the council account separately from fortnightly cash-flow planning.
 
@@ -11,7 +11,7 @@ The Rates section tracks the council account separately from fortnightly cash-fl
 
 ## First-time setup
 
-1. Deploy Version 3.3 and sign in normally.
+1. Deploy Version 3.3.2 and sign in normally.
 2. Open **Rates**.
 3. Select **Load supplied history**. The button remains visible after invoices are added, and existing invoice dates are skipped if it is selected again. This adds:
    - 15 September 2025 — $609.49

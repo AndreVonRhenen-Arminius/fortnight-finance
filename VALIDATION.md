@@ -1,4 +1,4 @@
-# Validation completed — Version 3.3
+# Validation completed — Version 3.3.2
 
 ## Package checks completed
 
@@ -12,7 +12,7 @@
 - The complete `supabase/` directory is unchanged from Version 3.2.1, including authentication, ASB/Akahu Edge Function and schedule files.
 - The supplied invoice history totals $2,560.13.
 - The supplied payment example totals $1,737.49 and produces the expected $822.64 owing balance.
-- The service-worker cache was increased to `fortnight-finance-v9` so deployed browsers retrieve Version 3.3 files.
+- The service-worker cache was increased to `fortnight-finance-v11` so deployed browsers retrieve Version 3.3.2 files.
 
 ## Runtime validation still required after deployment
 
@@ -28,3 +28,10 @@ The execution environment blocked local browser navigation, so the final GitHub 
 - Confirm Settings and ASB Sync still open normally.
 
 Create an encrypted backup before deploying or entering additional finance records.
+
+
+## Version 3.3.2 importer checks
+
+- Confirmed `–$94.00`, `−$94.00`, `-$94.00`, `($94.00)` and `$94.00 DR` parse as a $94.00 withdrawal.
+- Confirmed a CSV beginning with ASB report-information rows advances to the first row containing date, description and amount headings.
+- Confirmed the supplied Rates CSV produces 12 valid withdrawal rows rather than 12 `$0.00` invalid rows.

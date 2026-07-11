@@ -2,7 +2,7 @@
 
 Upload this complete ZIP and say:
 
-> Review `PROJECT_CONTEXT.md`, `README.md`, `CHANGELOG.md` and the source code. Continue development from Version 3.3. Do not replace `js/config.js`, Supabase authentication, Akahu secrets or existing finance data unless I explicitly ask.
+> Review `PROJECT_CONTEXT.md`, `README.md`, `CHANGELOG.md` and the source code. Continue development from Version 3.3.2. Do not replace `js/config.js`, Supabase authentication, Akahu secrets or existing finance data unless I explicitly ask.
 
 Also provide a screenshot and browser-console error when reporting a UI fault.
 

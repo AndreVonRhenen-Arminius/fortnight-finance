@@ -2,7 +2,7 @@
 
 ## Current release
 
-Version 3.3, GitHub Pages PWA for fortnightly household finance management.
+Version 3.3.2, GitHub Pages PWA for fortnightly household finance management.
 
 ## Deployment
 
