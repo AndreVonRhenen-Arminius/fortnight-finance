@@ -1,4 +1,4 @@
-# Validation completed — version 1.1
+# Validation completed — version 3.2.1
 
 ## Checks completed in the generated package
 
@@ -28,3 +28,13 @@ The following must be tested after completing `SETUP_GUIDE.md` because they requ
 - a complete backup and restore using your chosen password
 
 Do not enter the full household finance history until Microsoft login, cross-device sync, and backup restore have all passed.
+
+
+## Version 3.2.1 regression checks
+
+- ASB Sync renders with linked accounts, balance data, refresh timestamps and sync history.
+- Settings renders when statement-matching rules are linked to bills or income schedules.
+- JavaScript syntax checks pass for all application and service-worker modules.
+- Static checking confirms the missing `formatDateTime` and `linkedScheduleName` references are resolved.
+- `js/config.js` and the complete `supabase/` directory are unchanged from Version 3.2.
+- Service-worker cache version increased to `fortnight-finance-v8` so the corrected module replaces stale browser copies.

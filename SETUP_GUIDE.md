@@ -47,7 +47,7 @@ Do not write the Microsoft client-secret value or the Supabase secret/service-ro
 
 ## Step 1: Download and extract the package
 
-1. Download `Andre_Fortnight_Finance_PWA_GitHub_v1.1.zip`.
+1. Download the latest `Fortnight_Finance_Master` ZIP package.
 2. Right-click it in Windows and select **Extract All**.
 3. Open the extracted `andre-finance-pwa` folder.
 4. Confirm that `index.html`, `styles.css`, `manifest.webmanifest`, `sw.js`, and the `js` folder are visible.
@@ -315,7 +315,7 @@ window.FINANCE_CONFIG = {
 8. Wait for the GitHub Pages deployment to complete.
 9. Open the PWA address and refresh it.
 
-Version 1.1 uses a network-first service-worker strategy, so configuration changes should update normally. If an older installed copy remains stale, close all app windows, reopen the site in Edge, press `Ctrl+F5`, and then reopen the installed app.
+Version 3.2.1 uses a network-first service-worker strategy, so configuration changes should update normally. If an older installed copy remains stale, close all app windows, reopen the site in Edge, press `Ctrl+F5`, and then reopen the installed app.
 
 ---
 

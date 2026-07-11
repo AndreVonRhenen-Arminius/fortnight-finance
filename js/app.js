@@ -1,4 +1,4 @@
-// Fortnight Finance v3.1 application module. This file belongs in /js/app.js only.
+// Fortnight Finance v3.2.1 application module. This file belongs in /js/app.js only.
 import { storage } from './storage.js';
 import {
   cloudConfigured, getSession, signIn, signUp, signInMicrosoft, signOut,
@@ -42,6 +42,20 @@ const titles = {
   backup: ['Backup & Sync', 'Cloud status, exports and recovery'],
   settings: ['Settings', 'Accounts, fortnight dates and matching rules']
 };
+
+const DATE_TIME = new Intl.DateTimeFormat('en-NZ', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit'
+});
+
+function formatDateTime(value) {
+  if (!value) return '—';
+  const parsed = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? '—' : DATE_TIME.format(parsed);
+}
 
 function defaultState() {
   const today = todayISO();
@@ -297,11 +311,18 @@ async function registerServiceWorker() {
 
 function render() {
   applyTheme(state.settings.theme);
-  const [title, subtitle] = titles[currentView];
+  const selectedTitle = titles[currentView] || titles.dashboard;
+  const [title, subtitle] = selectedTitle;
   $('#pageTitle').textContent = title;
   $('#pageSubtitle').textContent = subtitle;
   const renderers = { dashboard: renderDashboard, bills: renderBills, income: renderIncome, transactions: renderTransactions, planning: renderPlanning, bank: renderBankSync, backup: renderBackup, settings: renderSettings };
-  $('#content').innerHTML = renderers[currentView]();
+  const renderer = renderers[currentView] || renderDashboard;
+  try {
+    $('#content').innerHTML = renderer();
+  } catch (error) {
+    console.error(`Failed to render ${currentView}`, error);
+    $('#content').innerHTML = '<div class="notice danger"><strong>This section could not be loaded.</strong> Refresh the page. If the problem continues, check the browser console or restore the latest working app files.</div>';
+  }
   bindViewEvents();
   if (currentView === 'backup') loadSnapshotsIntoView();
 }
@@ -492,7 +513,7 @@ function renderDashboard() {
       ${metricCard('Planned income', money(planned.income), `${expectedIncomeCount} scheduled payment(s)`, 'good')}
       ${metricCard('Total planned out', money(planned.bills + planned.budgets + planned.funds + planned.debts), `${unpaidCount} bill(s) still unpaid`, unpaidCount ? 'warn' : 'good')}
       ${metricCard('Income received', money(actual.income), `${receivedIncomeCount} actual deposit(s) recorded`, actual.income < planned.income ? 'warn' : 'good')}
-      ${metricCard('Cash remaining', money(actual.remaining), `${money(actual.expenses)} actually spent`, actual.remaining < 0 ? 'bad' : 'good')}
+      ${metricCard('Net actual cash flow', money(actual.remaining), `${money(actual.expenses)} actually spent`, actual.remaining < 0 ? 'bad' : 'good')}
     </div>
 
     <div class="grid two" style="margin-top:18px">
@@ -515,8 +536,8 @@ function renderDashboard() {
         ${summaryLine('Matched bills paid', actual.billsPaid)}
         ${summaryLine('Other spending', actual.variableSpent)}
         ${summaryLine('Transfers ignored', actual.transfersIgnored)}
-        ${summaryLine('Cash remaining', actual.remaining, true)}
-        <div class="muted small" style="margin-top:10px">Cash remaining uses only recorded income and real expenses. Internal transfers are shown for reference but excluded.</div>
+        ${summaryLine('Net actual cash flow', actual.remaining, true)}
+        <div class="muted small" style="margin-top:10px">Net actual cash flow uses only recorded income and real expenses. Internal transfers are shown for reference but excluded.</div>
       </div>
     </div>
 
@@ -804,6 +825,27 @@ function renderSettings() {
   <div class="notice">A rule checks whether the bank description contains a phrase, then recommends a merchant, category and transaction type. Linking a schedule allows an exact bank match to mark a bill paid or income received.</div>
   <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Description contains</th><th>Merchant</th><th>Category</th><th>Type</th><th>Linked schedule</th><th>Actions</th></tr></thead><tbody>${state.rules.length ? state.rules.map(r => `<tr><td>${escapeHtml(r.pattern)}</td><td>${escapeHtml(r.merchant || '')}</td><td>${escapeHtml(r.category || '')}</td><td>${escapeHtml(r.type || 'expense')}</td><td>${escapeHtml(linkedScheduleName(r))}</td><td class="actions"><button class="secondary-button" data-action="edit-rule" data-id="${r.id}">Edit</button><button class="text-button negative" data-action="delete-rule" data-id="${r.id}">Delete</button></td></tr>`).join('') : `<tr><td colspan="6"><div class="empty-state">Rules can also be created later as statement descriptions become familiar.</div></td></tr>`}</tbody></table></div>
   <div class="section-header"><h2>Danger zone</h2></div><div class="card"><div class="notice danger">Clearing data removes the local working copy. It does not automatically delete an existing cloud copy.</div><button class="danger-button" style="margin-top:12px" data-action="clear-all" type="button">Clear local app data</button></div>`;
+}
+
+function linkedScheduleName(rule = {}) {
+  const scheduleId = rule.scheduleId || rule.linkedBillId || rule.linkedIncomeId || '';
+  if (!scheduleId) return 'Not linked';
+
+  const requestedKind = rule.scheduleKind || (rule.linkedBillId ? 'bill' : rule.linkedIncomeId ? 'income' : '');
+  if (requestedKind === 'bill') {
+    const bill = state.bills.find(item => item.id === scheduleId);
+    return bill ? `Bill — ${bill.name}` : 'Missing bill';
+  }
+  if (requestedKind === 'income') {
+    const income = state.incomes.find(item => item.id === scheduleId);
+    return income ? `Income — ${income.name}` : 'Missing income';
+  }
+
+  const bill = state.bills.find(item => item.id === scheduleId);
+  if (bill) return `Bill — ${bill.name}`;
+  const income = state.incomes.find(item => item.id === scheduleId);
+  if (income) return `Income — ${income.name}`;
+  return 'Missing schedule';
 }
 
 function accountName(id) { return state.accounts.find(a => a.id === id)?.name || 'Not selected'; }
