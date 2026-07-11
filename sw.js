@@ -1,8 +1,9 @@
-const CACHE = 'fortnight-finance-v11';
+const CACHE = 'fortnight-finance-v12';
 const ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest',
-  './js/config.js', './js/app.js', './js/utils.js', './js/storage.js', './js/sync.js', './js/backup.js',
-  './samples/finance-setup-template.csv', './assets/icons/icon-192.png', './assets/icons/icon-512.png', './vendor/supabase.min.js'
+  './js/config.js', './js/microsoft-config.js', './js/app.js', './js/utils.js', './js/storage.js', './js/sync.js', './js/backup.js', './js/onedrive-core.js', './js/onedrive.js',
+  './samples/finance-setup-template.csv', './assets/icons/icon-192.png', './assets/icons/icon-512.png',
+  './vendor/supabase.min.js', './vendor/msal-browser.min.js'
 ];
 
 self.addEventListener('install', event => {
@@ -26,6 +27,15 @@ self.addEventListener('fetch', event => {
 
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
+
+  // MSAL returns an authorisation code to the SPA redirect URI. Never cache
+  // an authentication callback URL or response.
+  const authCallback = ['code', 'state', 'error', 'error_description', 'session_state']
+    .some(name => url.searchParams.has(name));
+  if (authCallback) {
+    event.respondWith(fetch(event.request).catch(() => caches.match('./index.html')));
+    return;
+  }
 
   // Recovery guard: the old template link could navigate an installed PWA to
   // the CSV itself. Any attempt to open a CSV as a page now returns to the app.

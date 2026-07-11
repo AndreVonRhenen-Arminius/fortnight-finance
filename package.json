@@ -1,0 +1,10 @@
+{
+  "name": "fortnight-finance",
+  "version": "3.3.3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check js/app.js && node --check js/backup.js && node --check js/config.js && node --check js/microsoft-config.js && node --check js/onedrive-core.js && node --check js/onedrive.js && node --check js/storage.js && node --check js/sync.js && node --check js/utils.js && node --check sw.js && node --check vendor/msal-browser.min.js && node --check vendor/supabase.min.js"
+  }
+}

@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.3.3
+- Added optional Microsoft OneDrive application-folder backup and synchronisation without replacing existing Supabase authentication or cloud storage.
+- Added MSAL Browser 5.17.0 using SPA authorisation code flow with PKCE and the `common` authority.
+- Added the least-privileged delegated Microsoft Graph permission `Files.ReadWrite.AppFolder`; no broader OneDrive permission is requested.
+- Added configurable Microsoft client ID, authority and redirect URI fields under Backup & Sync.
+- Added Microsoft sign-in, sign-out, Sync now, Pull from OneDrive and Push this device controls.
+- Added the unique OneDrive file `fortnight-finance-state.json` and application identifier `fortnight-finance-pwa`.
+- Added local-first queued sync, reconnect retry, timestamps, device IDs, SHA-256 integrity hashes, last-synchronised base hashes and Graph ETag protection.
+- Added validation that rejects malformed, tampered, unrelated or unsupported OneDrive JSON before it is applied.
+- Added explicit warnings and choices for first-device comparisons and independent conflicts.
+- Preserved the existing encrypted desktop OneDrive-folder backup as a separate recovery option.
+- Updated the service worker to cache the local MSAL asset while excluding authentication callback responses from the cache.
+- Kept the finance data schema at Version 5; no existing finance records, database schemas or Supabase structures were changed.
+- Added automated tests for migration, local-first save ordering, configuration, mock MSAL sign-in/session resumption, first-sign-in upload, mock Graph upload/download, pull/push validation, conflict detection, offline queuing and reconnect sync.
+- Updated the project handoff prompt for Version 3.3.3.
+- Removed obsolete duplicate root-level `app.js` and `sync.js` files; active modules remain under `js/`.
+
 ## 3.3.2
 - Fixed ASB CSV withdrawals containing typographic minus characters such as an en dash (`–$94.00`) being parsed as `$0.00` and marked invalid.
 - Added support for common bank amount formats including Unicode minus signs, accounting brackets and `CR`/`DR` suffixes.

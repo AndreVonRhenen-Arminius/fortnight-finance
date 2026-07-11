@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- Fortnight Finance v3.3.2: ASB CSV header and Unicode amount parsing fixes. -->
+<!-- Fortnight Finance v3.3.3: optional Microsoft OneDrive app-folder sync. -->
 <html lang="en-NZ" data-theme="dark">
 <head>
   <meta charset="utf-8">
@@ -102,7 +102,9 @@
   <input id="setupImportInput" type="file" accept=".csv,text/csv" hidden>
 
   <script src="vendor/supabase.min.js"></script>
+  <script src="vendor/msal-browser.min.js"></script>
   <script src="js/config.js"></script>
+  <script src="js/microsoft-config.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

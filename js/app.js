@@ -1,4 +1,4 @@
-// Fortnight Finance v3.3.2 application module. This file belongs in /js/app.js only.
+// Fortnight Finance v3.3.3 application module. This file belongs in /js/app.js only.
 import { storage } from './storage.js';
 import {
   cloudConfigured, getSession, signIn, signUp, signInMicrosoft, signOut,
@@ -15,6 +15,13 @@ import {
   frequencyLabel, number, escapeHtml, csvParse, parseMoney, parseDateFlexible,
   fingerprintTransaction
 } from './utils.js';
+import {
+  initOneDrive, getMicrosoftConfig, saveMicrosoftConfiguration, getOneDriveStatus,
+  subscribeOneDriveStatus, isOneDriveConfigured, isMicrosoftOneDriveSignedIn,
+  signInMicrosoftOneDrive, signOutMicrosoftOneDrive, syncOneDrive,
+  pullStateFromOneDrive, pushStateToOneDrive, acceptPulledOneDrive,
+  queueOneDriveSync, clearOneDriveError
+} from './onedrive.js';
 
 const cfg = window.FINANCE_CONFIG || {};
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -159,6 +166,11 @@ async function init() {
   state = migrate(await storage.getState());
   applyTheme(state.settings.theme);
   await restoreFolderHandle().catch(() => null);
+  await initOneDrive({
+    getState: () => state,
+    applyState: applyOneDriveStateAutomatically
+  }).catch(error => console.warn('OneDrive initialisation:', error));
+  subscribeOneDriveStatus(() => { if (currentView === 'backup') render(); });
   registerServiceWorker();
   bindGlobalEvents();
 
@@ -175,6 +187,7 @@ async function init() {
     hideAuth();
     render();
     updateSyncBadge('local', 'Local mode');
+    if (isMicrosoftOneDriveSignedIn()) queueOneDriveSync({ immediate: true });
   }
 }
 
@@ -201,6 +214,7 @@ async function enterCloudMode() {
   }
   render();
   startInactivityTimer();
+  if (isMicrosoftOneDriveSignedIn()) queueOneDriveSync({ immediate: true });
   enteringCloud = false;
 }
 
@@ -256,6 +270,7 @@ function bindGlobalEvents() {
 
   $('#localModeButton').addEventListener('click', () => {
     localOnly = true; hideAuth(); render(); updateSyncBadge('local', 'Local mode');
+    if (isMicrosoftOneDriveSignedIn()) queueOneDriveSync({ immediate: true });
   });
 
   $('#signOutButton').addEventListener('click', async () => {
@@ -414,6 +429,12 @@ function bindViewEvents() {
       'sync-now': () => syncNow(),
       'restore-cloud': () => restoreFromCloud(),
       'overwrite-cloud': () => overwriteCloud(),
+      'onedrive-sign-in': () => connectMicrosoftOneDrive(),
+      'onedrive-sign-out': () => disconnectMicrosoftOneDrive(),
+      'onedrive-sync-now': () => runOneDriveSync(),
+      'onedrive-pull': () => pullFromOneDrive(),
+      'onedrive-push': () => pushToOneDrive(),
+      'onedrive-clear-error': () => { clearOneDriveError(); render(); },
       'restore-snapshot': () => restoreSnapshot(id),
       'clear-all': () => clearAllData()
     };
@@ -428,6 +449,8 @@ function bindViewEvents() {
   if (bankOptionsForm) bankOptionsForm.addEventListener('submit', saveBankOptions);
   const ratesSettingsForm = $('#ratesSettingsForm');
   if (ratesSettingsForm) ratesSettingsForm.addEventListener('submit', saveRatesSettings);
+  const oneDriveConfigForm = $('#oneDriveConfigForm');
+  if (oneDriveConfigForm) oneDriveConfigForm.addEventListener('submit', saveOneDriveConfiguration);
 }
 
 
@@ -947,19 +970,61 @@ function renderBankSync() {
 }
 
 function renderBackup() {
+  const oneDrive = getOneDriveStatus();
+  const microsoft = getMicrosoftConfig();
+  const oneDriveConfigured = isOneDriveConfigured();
+  const oneDriveSignedIn = isMicrosoftOneDriveSignedIn();
+  const currentProvider = session && !localOnly
+    ? (oneDriveSignedIn ? 'Supabase + Microsoft OneDrive' : 'Supabase')
+    : (oneDriveSignedIn ? 'Local device + Microsoft OneDrive' : 'Local device only');
+  const statusKind = oneDrive.error ? 'danger' : oneDrive.state === 'synced' ? 'success' : ['offline', 'pending', 'attention'].includes(oneDrive.state) ? 'warning' : '';
   return `<div class="grid two">
-    <div class="card"><h2>Cloud synchronisation</h2>
-      ${cloudConfigured() ? `<p class="muted">${session && !localOnly ? `Signed in as <strong>${escapeHtml(session.user.email || 'Microsoft account')}</strong>. Changes sync automatically after they are saved locally.` : 'Cloud is configured, but this session is using local mode.'}</p>
+    <div class="card"><h2>Supabase cloud synchronisation</h2>
+      ${cloudConfigured() ? `<p class="muted">${session && !localOnly ? `Signed in as <strong>${escapeHtml(session.user.email || 'Microsoft account')}</strong>. Changes sync automatically after they are saved locally.` : 'Supabase is configured, but this session is using local mode.'}</p>
       <div class="button-row"><button class="primary-button" data-action="sync-now">Sync now</button><button class="secondary-button" data-action="restore-cloud">Reload cloud copy</button><button class="secondary-button" data-action="overwrite-cloud">Replace cloud with this device</button></div>` : `<div class="notice warning">Supabase is not configured yet. Follow SETUP_GUIDE.md after uploading the project to GitHub.</div>`}
     </div>
     <div class="card"><h2>Manual export</h2><p class="muted">Encrypted exports are recommended. Keep the backup password separately; it cannot be recovered.</p><div class="button-row"><button class="primary-button" data-action="export-encrypted">Encrypted export</button><button class="secondary-button" data-action="export-plain">Plain JSON</button><button class="secondary-button" data-action="import-backup">Import backup</button></div></div>
   </div>
+
+  <div class="card" style="margin-top:18px">
+    <div class="section-header" style="margin-top:0"><div><h2>Microsoft OneDrive app-folder sync</h2><div class="muted small">Optional additional backup and synchronisation. Existing Supabase authentication and cloud storage remain unchanged.</div></div></div>
+    <div class="notice ${statusKind}"><strong>${escapeHtml(oneDrive.message || 'OneDrive status unavailable.')}</strong>${oneDrive.error ? `<div class="small" style="margin-top:6px">${escapeHtml(oneDrive.error)}</div><button class="text-button" type="button" data-action="onedrive-clear-error">Clear error</button>` : ''}</div>
+    <div class="grid two" style="margin-top:16px">
+      <form id="oneDriveConfigForm">
+        <h3>Microsoft configuration</h3>
+        <label>Microsoft client ID<input name="clientId" autocomplete="off" value="${escapeHtml(microsoft.clientId)}" placeholder="00000000-0000-0000-0000-000000000000"><span class="help">Public Application (client) ID from Microsoft Entra. Do not enter a client secret.</span></label>
+        <label>Authority<input name="authority" value="${escapeHtml(microsoft.authority)}"><span class="help">Default: https://login.microsoftonline.com/common</span></label>
+        <label>Redirect URI<input name="redirectUri" value="${escapeHtml(microsoft.redirectUri)}"><span class="help">Must exactly match a Single-page application redirect URI in Microsoft Entra.</span></label>
+        <div class="button-row"><button class="primary-button" type="submit">Save Microsoft configuration</button></div>
+      </form>
+      <div>
+        <h3>Connection details</h3>
+        <div class="list">
+          <div class="list-item"><span>Microsoft account</span><strong>${escapeHtml(oneDrive.accountName || 'Not signed in')}</strong></div>
+          <div class="list-item"><span>Current sync provider</span><strong>${escapeHtml(currentProvider)}</strong></div>
+          <div class="list-item"><span>OneDrive file</span><strong>${escapeHtml(oneDrive.fileName)}</strong></div>
+          <div class="list-item"><span>Graph permission</span><strong>${escapeHtml(oneDrive.scope)}</strong></div>
+          <div class="list-item"><span>Last successful OneDrive sync</span><strong>${oneDrive.lastSuccessfulSync ? formatDateTime(oneDrive.lastSuccessfulSync) : 'Never'}</strong></div>
+          <div class="list-item"><span>Queue</span><strong>${oneDrive.pending ? 'Sync pending' : 'Clear'}</strong></div>
+        </div>
+        <div class="button-row" style="margin-top:14px">
+          <button class="primary-button" type="button" data-action="onedrive-sign-in" ${oneDriveConfigured && !oneDriveSignedIn ? '' : 'disabled'}>Sign in with Microsoft</button>
+          <button class="secondary-button" type="button" data-action="onedrive-sign-out" ${oneDriveSignedIn ? '' : 'disabled'}>Sign out</button>
+          <button class="secondary-button" type="button" data-action="onedrive-sync-now" ${oneDriveSignedIn ? '' : 'disabled'}>Sync now</button>
+          <button class="secondary-button" type="button" data-action="onedrive-pull" ${oneDriveSignedIn ? '' : 'disabled'}>Pull from OneDrive</button>
+          <button class="secondary-button" type="button" data-action="onedrive-push" ${oneDriveSignedIn ? '' : 'disabled'}>Push this device to OneDrive</button>
+        </div>
+        <p class="muted small" style="margin-top:12px">Local saving always continues. The restricted app-folder permission does not grant access to the rest of OneDrive. Work or school accounts may not support this restricted permission; the app will not request broader file access.</p>
+      </div>
+    </div>
+  </div>
+
   <div class="grid two" style="margin-top:18px">
-    <div class="card"><h2>Automatic OneDrive-folder backup</h2><p class="muted">On desktop Edge or Chrome, choose a folder inside your locally synced OneDrive. The app overwrites a latest encrypted backup after changes and keeps one encrypted file per day.</p>
+    <div class="card"><h2>Automatic OneDrive-folder backup</h2><p class="muted">This older desktop-folder option remains available. In Edge or Chrome, choose a folder inside your locally synced OneDrive. The app stores encrypted recovery files there.</p>
       <div class="notice ${hasFolderHandle() ? 'success' : ''}">${hasFolderHandle() ? 'A backup folder is connected.' : 'No backup folder is connected.'} ${hasSessionBackupPassword() ? 'The backup password is active for this browser session.' : 'Enter the backup password again after restarting the browser.'}</div>
       <div class="button-row" style="margin-top:12px"><button class="secondary-button" data-action="choose-folder">Choose folder</button><button class="secondary-button" data-action="folder-password">Set session password</button><button class="primary-button" data-action="backup-now">Back up now</button><button class="text-button negative" data-action="disconnect-folder">Disconnect</button></div>
     </div>
-    <div class="card"><h2>Recovery notes</h2><ul class="muted"><li>Local data saves immediately in this browser.</li><li>The last 30 meaningful local snapshots are retained.</li><li>Cloud sync is the main cross-device copy once configured.</li><li>OneDrive-folder files are independent recovery backups.</li></ul></div>
+    <div class="card"><h2>Recovery notes</h2><ul class="muted"><li>Local data saves immediately in this browser.</li><li>The last 30 meaningful local snapshots are retained.</li><li>Supabase remains the existing authenticated application sync.</li><li>Microsoft Graph OneDrive sync and the desktop-folder backup are optional independent recovery copies.</li></ul></div>
   </div>
   <div class="section-header"><h2>Recent local snapshots</h2></div><div id="snapshotArea" class="card"><p class="muted">Loading snapshots…</p></div>`;
 }
@@ -978,6 +1043,16 @@ function renderSettings() {
       <label>Colour theme<select name="theme"><option value="dark" ${state.settings.theme !== 'light' ? 'selected' : ''}>Dark</option><option value="light" ${state.settings.theme === 'light' ? 'selected' : ''}>Light</option></select><span class="help">You can also use the sun/moon button in the top bar.</span></label>
     </div><div class="button-row end"><button class="primary-button">Save settings</button></div>
   </form>
+  <div class="card" style="margin-top:18px">
+    <h2>Microsoft OneDrive configuration</h2>
+    <p class="muted">Optional additional sync. Supabase authentication and the existing finance cloud record remain unchanged.</p>
+    <form id="oneDriveConfigForm"><div class="form-grid">
+      <label>Microsoft client ID<input name="clientId" autocomplete="off" value="${escapeHtml(getMicrosoftConfig().clientId)}" placeholder="00000000-0000-0000-0000-000000000000"></label>
+      <label>Authority<input name="authority" value="${escapeHtml(getMicrosoftConfig().authority)}"></label>
+      <label class="full">Redirect URI<input name="redirectUri" value="${escapeHtml(getMicrosoftConfig().redirectUri)}"><span class="help">The redirect URI must exactly match the Single-page application entry in Microsoft Entra.</span></label>
+    </div><div class="button-row end"><button class="primary-button">Save Microsoft configuration</button></div></form>
+    <p class="muted small">Use Backup & Sync to sign in, compare copies, pull or push after saving the configuration.</p>
+  </div>
   <div class="section-header"><h2>Account nicknames</h2><button class="primary-button" data-action="add-account">+ Add account</button></div>
   <div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead><tbody>${state.accounts.map(a => `<tr><td>${escapeHtml(a.name)}</td><td>${escapeHtml(a.type)}</td><td>${a.active ? 'Active' : 'Paused'}</td><td class="actions"><button class="secondary-button" data-action="edit-account" data-id="${a.id}">Edit</button><button class="text-button negative" data-action="delete-account" data-id="${a.id}">Delete</button></td></tr>`).join('')}</tbody></table></div>
   <div class="section-header"><h2>Statement matching rules</h2><button class="primary-button" data-action="add-rule">+ Add rule</button></div>
@@ -1597,7 +1672,7 @@ async function commit(reason='Updated data', snapshot=true) {
     await storage.setState(state);
     if(snapshot) await storage.addSnapshot(structuredClone(state),reason).catch(()=>null);
     $('#saveStatus').textContent='Saved locally';
-    scheduleSync();scheduleFolderBackup();
+    scheduleSync();scheduleFolderBackup();queueOneDriveSync();
   },150);
 }
 
@@ -1619,6 +1694,96 @@ function showSyncConflict(remote) {
 async function restoreFromCloud() { if(!confirm('Replace this device data with the current cloud copy?'))return;const remote=await loadRemote();if(!remote?.state)return toast('No cloud copy was found.','error');state=migrate(remote.state);applyTheme(state.settings.theme);await storage.setState(state);render();toast('Cloud copy restored.','success'); }
 async function overwriteCloud() { if(!confirm('Replace the cloud copy with this device data?'))return;await overwriteRemote(state);updateSyncBadge('synced','Cloud synced');toast('Cloud copy replaced.','success'); }
 function updateSyncBadge(kind,text){const badge=$('#syncBadge');badge.className=`sync-badge ${kind}`;badge.textContent=text;}
+
+async function saveOneDriveConfiguration(event) {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  try {
+    await saveMicrosoftConfiguration({ clientId: form.get('clientId'), authority: form.get('authority'), redirectUri: form.get('redirectUri') });
+    toast('Microsoft OneDrive configuration saved in this browser.', 'success');
+    render();
+  } catch (error) { toast(error.message, 'error'); render(); }
+}
+
+async function connectMicrosoftOneDrive() {
+  try {
+    await signInMicrosoftOneDrive();
+    render();
+    const result = await syncOneDrive({ mode: 'first-sign-in', interactive: true });
+    await handleOneDriveDecision(result);
+  } catch (error) { toast(error.message, 'error'); render(); }
+}
+
+async function disconnectMicrosoftOneDrive() {
+  try { await signOutMicrosoftOneDrive(); toast('Signed out of Microsoft OneDrive.', 'success'); }
+  catch (error) { toast(error.message, 'error'); }
+  render();
+}
+
+async function runOneDriveSync() {
+  try {
+    const result = await syncOneDrive({ mode: 'manual', interactive: true });
+    await handleOneDriveDecision(result);
+    if (['pushed', 'pulled', 'identical'].includes(result?.kind)) toast('Microsoft OneDrive sync complete.', 'success');
+  } catch (error) { toast(error.message, 'error'); }
+  render();
+}
+
+async function handleOneDriveDecision(result) {
+  if (!result || ['pushed', 'pulled', 'identical', 'queued'].includes(result.kind)) return;
+  const localTime = formatDateTime(result.local?.updatedAt);
+  const remoteTime = formatDateTime(result.remote?.updatedAt);
+  if (result.kind === 'needs-pull') {
+    openModal('Newer OneDrive copy found', `<div class="notice warning">The OneDrive copy is newer. Loading it will replace this device's working data after validation and a safety snapshot.</div><p><strong>This device:</strong> ${escapeHtml(localTime)}<br><strong>OneDrive:</strong> ${escapeHtml(remoteTime)}</p><div class="button-row end"><button class="secondary-button" id="oneDriveDecisionCancel">Keep this device for now</button><button class="primary-button" id="oneDriveDecisionPull">Load OneDrive copy</button></div>`);
+    $('#oneDriveDecisionCancel').onclick = closeModal;
+    $('#oneDriveDecisionPull').onclick = async () => { closeModal(); await pullFromOneDrive({ confirmed: true }); };
+    return;
+  }
+  if (result.kind === 'needs-push') {
+    openModal('Newer device copy found', `<div class="notice warning">This device is newer. Uploading it will replace the existing OneDrive file.</div><p><strong>This device:</strong> ${escapeHtml(localTime)}<br><strong>OneDrive:</strong> ${escapeHtml(remoteTime)}</p><div class="button-row end"><button class="secondary-button" id="oneDriveDecisionCancel">Do not upload</button><button class="primary-button" id="oneDriveDecisionPush">Upload this device</button></div>`);
+    $('#oneDriveDecisionCancel').onclick = closeModal;
+    $('#oneDriveDecisionPush').onclick = async () => { closeModal(); await pushToOneDrive({ confirmed: true }); };
+    return;
+  }
+  openModal('Microsoft OneDrive conflict', `<div class="notice danger">Both this device and OneDrive changed independently. Nothing was overwritten.</div><p><strong>This device:</strong> ${escapeHtml(localTime)}<br><strong>OneDrive:</strong> ${escapeHtml(remoteTime)}</p><p>Choose the copy you intend to keep. Pull creates a local safety snapshot. Push replaces the OneDrive file.</p><div class="button-row end"><button class="secondary-button" id="oneDriveConflictCancel">Cancel</button><button class="secondary-button" id="oneDriveConflictPull">Keep OneDrive</button><button class="danger-button" id="oneDriveConflictPush">Keep this device</button></div>`);
+  $('#oneDriveConflictCancel').onclick = closeModal;
+  $('#oneDriveConflictPull').onclick = async () => { closeModal(); await pullFromOneDrive({ confirmed: true }); };
+  $('#oneDriveConflictPush').onclick = async () => { closeModal(); await pushToOneDrive({ confirmed: true }); };
+}
+
+async function pullFromOneDrive({ confirmed = false } = {}) {
+  if (!confirmed && !confirm('Replace this device data with the validated OneDrive copy? A local safety snapshot will be created first.')) return;
+  try {
+    const remote = await pullStateFromOneDrive({ interactive: true });
+    await storage.addSnapshot(structuredClone(state), 'Before Microsoft OneDrive pull').catch(() => null);
+    state = migrate(remote.envelope.data);
+    applyTheme(state.settings.theme);
+    await storage.setState(state);
+    acceptPulledOneDrive(remote.envelope);
+    render();
+    scheduleSync();
+    toast('Validated OneDrive copy loaded.', 'success');
+  } catch (error) { toast(error.message, 'error'); render(); }
+}
+
+async function pushToOneDrive({ confirmed = false } = {}) {
+  if (!confirmed && !confirm('Replace the OneDrive copy with the current data on this device?')) return;
+  try {
+    await pushStateToOneDrive(state, { interactive: true, overwrite: true });
+    toast('This device was uploaded to OneDrive.', 'success');
+  } catch (error) { toast(error.message, 'error'); }
+  render();
+}
+
+async function applyOneDriveStateAutomatically(incoming, envelope) {
+  await storage.addSnapshot(structuredClone(state), 'Before automatic Microsoft OneDrive update').catch(() => null);
+  state = migrate(incoming);
+  applyTheme(state.settings.theme);
+  await storage.setState(state);
+  render();
+  scheduleSync();
+  toast('A newer OneDrive copy was loaded automatically because this device had no local changes.', 'success');
+}
 
 function scheduleFolderBackup() {
   if(!hasFolderHandle()||!hasSessionBackupPassword())return;clearTimeout(folderBackupTimer);
